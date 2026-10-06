@@ -1,0 +1,66 @@
+name: Validate Apple client source
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Private source snapshot commit (scripts/client_builds.py)
+        required: true
+        type: string
+      source_revision:
+        description: Canonical source revision recorded in the snapshot
+        required: true
+        type: string
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out private ios source snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: QualityCopperShovel/fairystack
+          ref: ${{ inputs.source_commit }}
+          ssh-key: ${{ secrets.FAIRYSTACK_SOURCE_KEY }}
+          persist-credentials: false
+          path: native-client
+      - name: Verify source snapshot
+        working-directory: native-client
+        shell: bash
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+          REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          git log -1 --format=%B | grep -qx "Platform: ios"
+          git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+          rm -rf .git
+          printf 'revision=%s\nsnapshot=%s\n' "$REVISION" "$COMMIT" > "$GITHUB_WORKSPACE/source-receipt.txt"
+      - name: Test core contracts
+        working-directory: native-client
+        run: swift test
+      - name: Build iPhone and test simulator interactions
+        working-directory: native-client
+        run: |
+          python3 generate_project.py
+          xcodebuild -version
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for rows in d["devices"].values() for x in rows if x["name"].startswith("iPhone")))')
+          xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination 'generic/platform=iOS' -configuration Release CODE_SIGNING_ALLOWED=NO build
+          xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination "platform=iOS Simulator,id=$device" -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO test
+          xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots
+      - name: Retain immutable validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-client-validation-${{ inputs.source_revision }}
+          path: |
+            source-receipt.txt
+            native-client/TestResults.xcresult
+            native-client/screenshots
+          if-no-files-found: error
+          retention-days: 14

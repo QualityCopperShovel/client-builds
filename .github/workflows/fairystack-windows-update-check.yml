@@ -1,0 +1,64 @@
+name: FairyStack for Windows self-update check
+# Installs an older published release with its window open and requires it to replace itself with the
+# version in the live manifest it reads (windows-update.json since 1.7.0; the frozen windows-version.json
+# bridge before that), then reopen its window from the installed path.
+on:
+  workflow_dispatch:
+    inputs:
+      from_version:
+        description: Published version to start from (e.g. 1.0.0)
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  update:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Install the older release and let it update itself
+        env:
+          FROM: ${{ inputs.from_version }}
+        run: |
+          if ($env:FROM -notmatch '^\d+\.\d+\.\d+$') { throw 'from_version must be MAJOR.MINOR.PATCH' }
+          $manifest = if ([version]$env:FROM -lt [version]'1.7.0') { 'windows-version.json' } else { 'windows-update.json' }
+          $want = (Invoke-RestMethod -TimeoutSec 20 "https://fairystack.com/assets/$manifest").version
+          "starting at $env:FROM, $manifest offers $want"
+          if ($want -eq $env:FROM) { throw 'the manifest does not offer a newer version' }
+          $setup = Join-Path $env:RUNNER_TEMP "FairyStack-Setup-$env:FROM.exe"
+          Invoke-WebRequest -TimeoutSec 180 -OutFile $setup "https://fairystack.com/downloads/FairyStack-Setup-$env:FROM.exe"
+          $data = Join-Path $env:LOCALAPPDATA FairyStack
+          New-Item -ItemType Directory -Force $data | Out-Null
+          # Retained old installations may still save the retired workspace; the successor must reopen its welcome window.
+          '{"origin":"https://multi.fairystack.com/","window_open":true}' | Set-Content (Join-Path $data settings.json)
+          $p = Start-Process $setup -PassThru
+          if (-not $p.WaitForExit(60000) -or $p.ExitCode -ne 0) { throw 'setup did not hand over to the installed copy' }
+          $installed = Join-Path $env:LOCALAPPDATA 'Programs\FairyStack\FairyStack.exe'
+          $version = { $v = (Get-Item $installed -ErrorAction SilentlyContinue).VersionInfo.FileVersion; if ($v) { $v -replace '\.0$','' } }
+          "installed at start: $(& $version)"
+          foreach ($i in 1..72) { if ((& $version) -eq $want) { break }; Start-Sleep 5 }
+          "installed version after update: $(& $version)"
+          if ((& $version) -ne $want) { Get-Content (Join-Path $data fairystack.log) -ErrorAction SilentlyContinue; throw 'the app did not update itself' }
+          # Replacing the file does not finish the process handoff. Like the Mac check,
+          # wait for the replacement's running version, cleanup and restored window together.
+          $ready = $false
+          $window = $null
+          foreach ($i in 1..30) {
+            $processes = @(Get-Process FairyStack -ErrorAction SilentlyContinue)
+            $window = $processes | Where-Object { $_.Path -eq $installed -and $_.MainWindowTitle }
+            $started = (Get-Content (Join-Path $data fairystack.log) -Raw -ErrorAction SilentlyContinue) -match [regex]::Escape("started $want;")
+            $previous = Test-Path (Join-Path (Split-Path $installed) FairyStack.previous.exe)
+            if ($started -and $window -and $processes.Count -eq 1 -and -not $previous) { $ready = $true; break }
+            Start-Sleep 2
+          }
+          Get-Content (Join-Path $data fairystack.log) -ErrorAction SilentlyContinue
+          "handoff result: started=$started processes=$($processes.Count) previous=$previous"
+          if (-not $ready) { throw 'timed out waiting for the updated process, cleanup and restored window' }
+          "running pid $($window.Id): $($window.Path) window '$($window.MainWindowTitle)'"
+          $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FairyStack'
+          if ($entry.DisplayVersion -ne $want) { throw "Apps & features still shows $($entry.DisplayVersion)" }
+          Get-Process FairyStack | Stop-Process -Force
+          "PASS: $env:FROM updated itself to $want and reopened its window"

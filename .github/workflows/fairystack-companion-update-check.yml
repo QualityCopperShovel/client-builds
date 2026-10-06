@@ -1,0 +1,76 @@
+name: FairyStack for Mac self-update check
+# Installs an older published signed Companion, launches it, and requires it to
+# replace itself with the version in fairystack.com's live update manifest.
+on:
+  workflow_dispatch:
+    inputs:
+      from_version:
+        description: Published version to start from (e.g. 1.1.0)
+        required: true
+        type: string
+      expect_window:
+        description: Start with an open FairyStack window and require the updated build to show it again
+        required: false
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  update:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Install the older signed app and let it update itself
+        env:
+          FROM: ${{ inputs.from_version }}
+          EXPECT_WINDOW: ${{ inputs.expect_window }}
+        run: |
+          set -euo pipefail
+          [[ "$FROM" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          # Builds before 1.2 were "FairyStack Companion.app" on the legacy manifest; they move to FairyStack.app.
+          legacy=false; [ "$(printf '%s\n1.2.0\n' "$FROM" | sort -V | head -1)" != 1.2.0 ] && legacy=true
+          if $legacy; then manifest=mac-companion-version.json; old_name="FairyStack Companion"; old_zip="FairyStack-Companion-$FROM.zip"
+          else manifest=mac-version.json; old_name=FairyStack; old_zip="FairyStack-$FROM.zip"; fi
+          want=$(curl -fsS --max-time 20 "https://fairystack.com/assets/$manifest" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
+          echo "starting at $FROM, $manifest offers $want"
+          [ "$want" != "$FROM" ]
+          curl -fsSL --max-time 120 -o old.zip "https://fairystack.com/assets/$old_zip"
+          mkdir -p "$HOME/Applications"; ditto -x -k old.zip "$HOME/Applications"
+          start="$HOME/Applications/$old_name.app"
+          app="$HOME/Applications/FairyStack.app"
+          version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null || true; }
+          [ "$(version "$start")" = "$FROM" ]
+          if [ "$EXPECT_WINDOW" = true ]; then
+            # The owner had the FairyStack window open when the update arrived.
+            defaults write com.fairystack.companion workspaceOrigin https://example.com  # no trial lease or login side effects
+            defaults write com.fairystack.companion workspaceWindowOpen -bool true
+          fi
+          open "$start"
+          if [ "$EXPECT_WINDOW" = true ]; then
+            # The app is a Foreground (Dock) app only while a FairyStack window is open, else a UIElement.
+            apptype() { lsappinfo info -only applicationtype "$(lsappinfo find pid="$1")" 2>/dev/null | sed -n 's/.*"ApplicationType"="\([A-Za-z]*\)".*/\1/p'; }
+
+          fi
+          for i in $(seq 1 60); do [ "$(version "$app")" = "$want" ] && [ ! -e "$HOME/Applications/FairyStack Companion.app" ] && break; sleep 5; done
+          echo "installed version after update: $(version "$app")"
+          [ "$(version "$app")" = "$want" ]
+          [ ! -e "$HOME/Applications/FairyStack Companion.app" ]
+          codesign --verify --deep --strict -R '=anchor apple generic and identifier "com.fairystack.companion" and certificate leaf[subject.OU] = "7ZPTPEXGRC"' "$app"
+          spctl --assess --type execute "$app"
+          # Updating can replace the process before the first observation. Reacquire
+          # its PID on every sample, and wait for the replacement's terminal state.
+          ready=false; pid=''; kind=''
+          for i in $(seq 1 20); do
+            pid=$(pgrep -x FairyStackCompanion | head -1 || true)
+            kind=''
+            if [ -n "$pid" ] && ps -o command= -p "$pid" | grep -q "/FairyStack.app/" \
+                && [ ! -e "$HOME/Applications/FairyStack.previous.app" ] \
+                && [ ! -e "$HOME/Applications/FairyStack Companion.previous.app" ]; then
+              if [ "$EXPECT_WINDOW" = true ]; then kind=$(apptype "$pid" || true); else kind=not-requested; fi
+              if [ "$EXPECT_WINDOW" != true ] || [ "$kind" = Foreground ]; then ready=true; break; fi
+            fi
+            sleep 3
+          done
+          echo "relaunch result: ready=$ready pid=$pid application_type=$kind installed=$(version "$app")"
+          $ready || { echo "Timed out waiting for the updated FairyStack process, cleanup and restored window"; exit 1; }
+          echo "PASS: $FROM updated itself to $want and relaunched from FairyStack.app"

@@ -1,0 +1,164 @@
+name: Build FairyStack for Windows
+# Builds the published, checksummed FairyStack for Windows source archive: unit and product tests,
+# a self-contained single-file x64 build, a real WebView2 window launch, and a per-user install check.
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Private source snapshot commit (scripts/client_builds.py)
+        required: true
+        type: string
+      source_revision:
+        description: Canonical source revision recorded in the snapshot
+        required: true
+        type: string
+      store_identity_name:
+        description: Optional exact Partner Center package identity (all three identity fields required together)
+        required: false
+        type: string
+      store_publisher:
+        description: Optional exact Partner Center publisher (CN=...)
+        required: false
+        type: string
+      store_publisher_display_name:
+        description: Optional exact Partner Center publisher display name
+        required: false
+        type: string
+      store_display_name:
+        description: Reserved Microsoft Store display name
+        required: false
+        default: FairyStack
+        type: string
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: client
+    steps:
+      - name: Check out private windows source snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: QualityCopperShovel/fairystack
+          ref: ${{ inputs.source_commit }}
+          ssh-key: ${{ secrets.FAIRYSTACK_SOURCE_KEY }}
+          persist-credentials: false
+          path: client
+      - name: Verify source snapshot
+        working-directory: client
+        shell: bash
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+          REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          git log -1 --format=%B | grep -qx "Platform: windows"
+          git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+          rm -rf .git
+          printf 'revision=%s\nsnapshot=%s\n' "$REVISION" "$COMMIT" > "$GITHUB_WORKSPACE/source-receipt.txt"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Product contract tests
+        run: python -m unittest discover -s tests -v
+      - name: Core unit tests
+        run: dotnet test tests/FairyStack.Core.Tests -c Release --logger "console;verbosity=normal"
+      - name: Publish self-contained x64 build
+        run: |
+          dotnet publish src/FairyStack -c Release -r win-x64 -o publish
+          $version = (Get-Content VERSION -Raw).Trim()
+          $file = (Get-Item publish/FairyStack.exe).VersionInfo.FileVersion
+          if ($file -ne "$version.0") { throw "FileVersion $file does not match VERSION $version" }
+          New-Item -ItemType Directory dist | Out-Null
+          "{0:N1} MB" -f ((Get-Item publish/FairyStack.exe).Length / 1MB)
+      - name: Verify unsigned build before packaging
+        timeout-minutes: 3
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $signature = Get-AuthenticodeSignature publish/FairyStack.exe
+          if ($signature.Status -ne 'NotSigned' -or $signature.SignerCertificate) { throw "Release must be unsigned: $($signature.Status)" }
+          Copy-Item publish/FairyStack.exe "dist/FairyStack-Setup-$version.exe"
+          @{
+            status = [string]$signature.Status
+            sha256 = (Get-FileHash "dist/FairyStack-Setup-$version.exe" -Algorithm SHA256).Hash.ToLower()
+            verified_at = [DateTime]::UtcNow.ToString('o')
+          } | ConvertTo-Json | Set-Content dist/signature-receipt.json
+          Get-Content dist/signature-receipt.json
+      - name: Launch the real window (WebView2 load and user agent)
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP smoke.json
+          $p = Start-Process publish/FairyStack.exe -ArgumentList '--fairystack-smoke','https://example.com/',$report -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw 'smoke test did not exit within 120 seconds' }
+          Get-Content $report
+          if ($p.ExitCode -ne 0) { throw "smoke test failed with exit $($p.ExitCode)" }
+      - name: Install per user, open the window, hand a second launch to the running app
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $data = Join-Path $env:LOCALAPPDATA FairyStack
+          New-Item -ItemType Directory -Force $data | Out-Null
+          # A saved address opens the window straight away (the Multiplayer sign-in page: no trial lease or submitted credentials).
+          '{"origin":"https://multi.fairystack.com/","window_open":true}' | Set-Content (Join-Path $data settings.json)
+          $setup = Resolve-Path "dist/FairyStack-Setup-$version.exe"
+          $p = Start-Process $setup -PassThru
+          if (-not $p.WaitForExit(60000)) { throw 'setup did not hand over to the installed copy' }
+          if ($p.ExitCode -ne 0) { throw "setup exited $($p.ExitCode)" }
+          $installed = Join-Path $env:LOCALAPPDATA 'Programs\FairyStack\FairyStack.exe'
+          if ((Get-Item $installed).VersionInfo.FileVersion -ne "$version.0") { throw 'installed copy has the wrong version' }
+          if ((Get-FileHash $installed).Hash -ne (Get-FileHash $setup).Hash) { throw 'Installed binary differs from the installer' }
+          if ((Get-AuthenticodeSignature $installed).Status -ne 'NotSigned') { throw 'Installed binary must be unsigned' }
+          $window = $null
+          foreach ($i in 1..30) {
+            $window = Get-Process FairyStack -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $installed -and $_.MainWindowTitle }
+            if ($window) { break }; Start-Sleep 2
+          }
+          if (-not $window) { Get-Content (Join-Path $data fairystack.log) -ErrorAction SilentlyContinue; throw 'installed FairyStack did not open its window' }
+          "window: $($window.MainWindowTitle)"
+          $protocol = (Get-ItemProperty 'HKCU:\Software\Classes\fairystack\shell\open\command').'(default)'
+          if ($protocol -ne "`"$installed`" `"%1`"") { throw "fairystack:// handler is $protocol" }
+          $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FairyStack'
+          if ($entry.DisplayVersion -ne $version) { throw "Apps & features shows $($entry.DisplayVersion)" }
+          if (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'FairyStack.lnk'))) { throw 'no Start menu shortcut' }
+          $second = Start-Process $installed -PassThru
+          if (-not $second.WaitForExit(20000) -or $second.ExitCode -ne 0) { throw 'a second launch did not hand over to the running app' }
+          if (@(Get-Process FairyStack | Where-Object Path -eq $installed).Count -ne 1) { throw 'more than one FairyStack is running' }
+          Get-Process FairyStack | Stop-Process -Force
+          "PASS: installed $version, window open, links registered, single instance"
+      - name: Install MSIX and verify native packaged behavior
+        timeout-minutes: 6
+        run: ./packaging/test-msix.ps1 -PublishDirectory publish -OutputDirectory dist
+      - name: Build Microsoft Store submission package when identity is configured
+        timeout-minutes: 3
+        env:
+          STORE_NAME: ${{ inputs.store_identity_name }}
+          STORE_PUBLISHER: ${{ inputs.store_publisher }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ inputs.store_publisher_display_name }}
+          STORE_DISPLAY_NAME: ${{ inputs.store_display_name }}
+        run: |
+          $fields = @($env:STORE_NAME,$env:STORE_PUBLISHER,$env:STORE_PUBLISHER_DISPLAY_NAME)
+          $provided = @($fields | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+          if ($provided -eq 0) {
+            @{status='waiting_for_partner_center'; store_published=$false; detail='Development MSIX validated; production package requires the reserved Store identity.'} | ConvertTo-Json | Set-Content dist/store-submission-status.json
+          } elseif ($provided -ne 3) {
+            throw 'All three Partner Center identity fields must be provided together'
+          } else {
+            ./packaging/build-msix.ps1 -PublishDirectory publish -OutputDirectory dist -IdentityName $env:STORE_NAME -Publisher $env:STORE_PUBLISHER -PublisherDisplayName $env:STORE_PUBLISHER_DISPLAY_NAME -DisplayName $env:STORE_DISPLAY_NAME
+          }
+      - name: FairyStack log (on failure)
+        if: failure()
+        run: Get-Content (Join-Path $env:LOCALAPPDATA 'FairyStack\fairystack.log') -ErrorAction SilentlyContinue
+      - name: Package
+        run: |
+          Get-ChildItem dist -File | Where-Object Extension -in '.exe','.msix' | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content dist/archive.sha256
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE source-receipt.txt) dist/
+          Get-Content dist/archive.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fairystack-windows
+          path: client/dist/*
+          retention-days: 30
