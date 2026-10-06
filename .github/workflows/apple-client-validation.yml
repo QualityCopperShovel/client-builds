@@ -58,9 +58,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: apple-client-validation-${{ inputs.source_revision }}
+          # Screenshots and the receipt only: an .xcresult bundle carries build logs from the private source.
           path: |
             source-receipt.txt
-            native-client/TestResults.xcresult
             native-client/screenshots
           if-no-files-found: error
           retention-days: 14
