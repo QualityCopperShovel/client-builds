@@ -110,7 +110,7 @@ def connect(installed):
 def main():
     window = server = thumbprint = None
     try:
-        meta = json.loads(get('https://fairystack.com/assets/windows-version.json'))
+        meta = json.loads(get('https://fairystack.com/assets/windows-update.json'))
         data = get(meta['download_url'])
         assert hashlib.sha256(data).hexdigest() == meta['download_sha256']
         (OUT/'release.json').write_text(json.dumps(meta, indent=2))
