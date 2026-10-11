@@ -123,7 +123,7 @@ jobs:
           if ($protocol -ne "`"$installed`" `"%1`"") { throw "fairystack:// handler is $protocol" }
           $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FairyStack'
           if ($entry.DisplayVersion -ne $version) { throw "Apps & features shows $($entry.DisplayVersion)" }
-          if (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'FairyStack.lnk'))) { throw 'no Start menu shortcut' }
+          if (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'Cyberpsychos.lnk'))) { throw 'no Start menu shortcut' }
           $second = Start-Process $installed -PassThru
           if (-not $second.WaitForExit(20000) -or $second.ExitCode -ne 0) { throw 'a second launch did not hand over to the running app' }
           if (@(Get-Process FairyStack | Where-Object Path -eq $installed).Count -ne 1) { throw 'more than one FairyStack is running' }

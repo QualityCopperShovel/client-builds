@@ -143,7 +143,8 @@ jobs:
         run: |
           set -euo pipefail
           version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
-          name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' Info.plist)"
+          name=FairyStack  # bundle folder and download names are pinned by installed updaters; CFBundleName is only the shown name
+          display="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' Info.plist)"
           executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' Info.plist)"
           app="$name.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" AppIcon.iconset
@@ -180,7 +181,7 @@ jobs:
           # Ordinary download: drag the app onto the Applications alias. Signed, notarized and stapled itself.
           dmg_root="$RUNNER_TEMP/dmg"; mkdir -p "$dmg_root"; ditto "$app" "$dmg_root/$app"; ln -s /Applications "$dmg_root/Applications"
           dmg="dist/${name// /-}-$version.dmg"
-          python3 scripts/run_with_timeout.py 300 hdiutil create -volname "$name" -srcfolder "$dmg_root" -fs HFS+ -format UDZO -ov "$dmg"
+          python3 scripts/run_with_timeout.py 300 hdiutil create -volname "$display" -srcfolder "$dmg_root" -fs HFS+ -format UDZO -ov "$dmg"
           # Apple's timestamp service has brief outages; retry before failing the release.
           python3 "$GITHUB_WORKSPACE/scripts/codesign_with_retry.py" --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
           python3 scripts/run_with_timeout.py 1000 xcrun notarytool submit "$dmg" --key "$key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait --timeout 15m
