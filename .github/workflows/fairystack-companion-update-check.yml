@@ -34,7 +34,10 @@ jobs:
           want=$(curl -fsS --max-time 20 "https://fairystack.com/assets/$manifest" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
           echo "starting at $FROM, $manifest offers $want"
           [ "$want" != "$FROM" ]
-          curl -fsSL --max-time 120 -o old.zip "https://fairystack.com/assets/$old_zip"
+          # Releases from 1.35 publish Cyberpsychos-<v>.zip; earlier ones only FairyStack-<v>.zip.
+          if $legacy || ! curl -fsSL --max-time 120 -o old.zip "https://fairystack.com/assets/Cyberpsychos-$FROM.zip"; then
+            curl -fsSL --max-time 120 -o old.zip "https://fairystack.com/assets/$old_zip"
+          fi
           mkdir -p "$HOME/Applications"; ditto -x -k old.zip "$HOME/Applications"
           start="$HOME/Applications/$old_name.app"
           app="$HOME/Applications/FairyStack.app"
