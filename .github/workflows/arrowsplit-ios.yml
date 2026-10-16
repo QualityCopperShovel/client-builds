@@ -16,10 +16,10 @@ on:
         required: true
         type: string
       mode:
-        description: validate (simulator build + screenshot) or testflight (signed upload)
+        description: validate (simulator build + screenshot), testflight (signed upload) or adhoc (IPA for registered devices)
         required: true
         type: choice
-        options: [validate, testflight]
+        options: [validate, testflight, adhoc]
 
 permissions:
   contents: read
@@ -115,7 +115,7 @@ jobs:
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           rm -f "$certificate"
           security find-identity -v -p codesigning "$keychain" | grep -q 'Apple Distribution' || { echo 'Apple Distribution identity missing'; exit 1; }
-      - name: Archive, export and upload to TestFlight
+      - name: Archive and export (and upload to TestFlight)
         if: inputs.mode != 'validate'
         working-directory: native-client
         env:
@@ -127,7 +127,7 @@ jobs:
           FASTLANE_HIDE_CHANGELOG: '1'
           SPACESHIP_TIMEOUT: '30'
           FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: '60'
-        run: bundle exec fastlane ios beta
+        run: bundle exec fastlane ios ${{ inputs.mode == 'testflight' && 'beta' || 'adhoc' }}
       - name: Write build receipt
         if: inputs.mode != 'validate'
         working-directory: native-client
@@ -154,6 +154,14 @@ jobs:
           path: testflight-receipt.txt
           if-no-files-found: error
           retention-days: 90
+      - name: Retain ad hoc IPA
+        if: inputs.mode == 'adhoc'
+        uses: actions/upload-artifact@v4
+        with:
+          name: arrowsplit-ios-adhoc
+          path: native-client/build/Arrowsplit.ipa
+          if-no-files-found: error
+          retention-days: 30
       - name: Remove temporary signing material
         if: always() && inputs.mode != 'validate'
         run: |
