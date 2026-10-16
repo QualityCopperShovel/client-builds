@@ -151,8 +151,8 @@ jobs:
             --key "$key" --key-id "$APPLE_NOTARY_KEY_ID" \
             --issuer "$APPLE_NOTARY_ISSUER_ID" --wait --timeout 15m
           rm -f "$key"
-          /usr/bin/python3 scripts/run_with_timeout.py 180 xcrun stapler staple "$app"
-          xcrun stapler validate "$app"
+          # Apple's ticket lookup drops connections now and then; retry the staple and its check.
+          for attempt in 1 2 3; do /usr/bin/python3 scripts/run_with_timeout.py 180 xcrun stapler staple "$app" && /usr/bin/python3 scripts/run_with_timeout.py 120 xcrun stapler validate "$app" && break; [ $attempt -lt 3 ] || exit 1; sleep 20; done
           /usr/bin/python3 scripts/run_with_timeout.py 180 spctl --assess \
             --type execute --verbose=2 "$app"
           mkdir -p dist

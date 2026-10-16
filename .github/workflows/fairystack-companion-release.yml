@@ -173,8 +173,8 @@ jobs:
           key="$RUNNER_TEMP/AuthKey.p8"
           printf '%s' "$APPLE_NOTARY_PRIVATE_KEY_P8" > "$key"
           python3 scripts/run_with_timeout.py 1000 xcrun notarytool submit "$upload" --key "$key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait --timeout 15m
-          python3 scripts/run_with_timeout.py 180 xcrun stapler staple "$app"
-          xcrun stapler validate "$app"
+          # Apple's ticket lookup drops connections now and then; retry the staple and its check.
+          for attempt in 1 2 3; do python3 scripts/run_with_timeout.py 180 xcrun stapler staple "$app" && python3 scripts/run_with_timeout.py 120 xcrun stapler validate "$app" && break; [ $attempt -lt 3 ] || exit 1; sleep 20; done
           python3 scripts/run_with_timeout.py 180 spctl --assess --type execute --verbose=2 "$app"
           mkdir -p dist
           ditto -c -k --keepParent "$app" "dist/${name// /-}-$version.zip"
@@ -185,8 +185,8 @@ jobs:
           # Apple's timestamp service has brief outages; retry before failing the release.
           python3 "$GITHUB_WORKSPACE/scripts/codesign_with_retry.py" --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
           python3 scripts/run_with_timeout.py 1000 xcrun notarytool submit "$dmg" --key "$key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait --timeout 15m
-          python3 scripts/run_with_timeout.py 180 xcrun stapler staple "$dmg"
-          xcrun stapler validate "$dmg"
+          # Apple's ticket lookup drops connections now and then; retry the staple and its check.
+          for attempt in 1 2 3; do python3 scripts/run_with_timeout.py 180 xcrun stapler staple "$dmg" && python3 scripts/run_with_timeout.py 120 xcrun stapler validate "$dmg" && break; [ $attempt -lt 3 ] || exit 1; sleep 20; done
           python3 scripts/run_with_timeout.py 180 spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
           if [ "${{ inputs.legacy_bridge }}" = true ]; then
             # Pre-1.2 updaters stage exactly this folder name; the signature does not cover it.
