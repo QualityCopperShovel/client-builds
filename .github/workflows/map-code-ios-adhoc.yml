@@ -110,8 +110,8 @@ jobs:
           echo "$version"
           major="$(sed -nE '1s/Xcode ([0-9]+).*/\1/p' <<<"$version")"
           [ "$major" -ge 26 ] || { echo "Xcode 26 or later is required; newest is $xcode"; exit 1; }
-          swift test
-          bundle exec fastlane ios adhoc
+          swift test > "$RUNNER_TEMP/map-code-build.log" 2>&1
+          bundle exec fastlane ios adhoc >> "$RUNNER_TEMP/map-code-build.log" 2>&1
       - name: Write build receipt
         working-directory: native-client
         env:
@@ -142,6 +142,25 @@ jobs:
             MapCode.ipa
           if-no-files-found: error
           retention-days: 90
+      - name: Encrypt private compiler diagnostics
+        if: always()
+        env:
+          MAP_CODE_IOS_LOG_PASSWORD: ${{ secrets.MAP_CODE_IOS_LOG_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$MAP_CODE_IOS_LOG_PASSWORD"
+          if [ -f "$RUNNER_TEMP/map-code-build.log" ]; then
+            openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -pass env:MAP_CODE_IOS_LOG_PASSWORD -in "$RUNNER_TEMP/map-code-build.log" -out "$GITHUB_WORKSPACE/map-code-build.log.enc"
+            rm -f "$RUNNER_TEMP/map-code-build.log"
+          fi
+      - name: Retain encrypted diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-code-ios-diagnostics-${{ inputs.build_number }}
+          path: map-code-build.log.enc
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Remove temporary signing material
         if: always()
         run: |
