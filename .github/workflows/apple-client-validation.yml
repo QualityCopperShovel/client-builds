@@ -47,6 +47,13 @@ jobs:
           git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
           rm -rf .git
           printf 'revision=%s\nsnapshot=%s\n' "$REVISION" "$COMMIT" > "$GITHUB_WORKSPACE/source-receipt.txt"
+      - name: Select the current distribution toolchain
+        run: |
+          set -euo pipefail
+          # Match TestFlight. The runner default still selects Xcode 16.4.
+          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
       - name: Test core contracts
         working-directory: native-client
         run: swift test
@@ -61,7 +68,9 @@ jobs:
         working-directory: native-client
         run: |
           bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
-          device=$(bounded 30 xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for rows in d["devices"].values() for x in rows if x["name"].startswith("iPhone")))')
+          # Use the newest installed iOS runtime, not the first (oldest) list entry.
+          # iOS 18.5 has WebKit's missing libswiftWebKit launch fault (bug 293831).
+          device=$(bounded 30 xcrun simctl list devices available -j | python3 -c 'import json,re,sys; d=json.load(sys.stdin)["devices"]; candidates=[(tuple(map(int,re.search(r"iOS-([0-9-]+)$",runtime)[1].split("-"))),x["udid"]) for runtime,rows in d.items() if re.search(r"iOS-([0-9-]+)$",runtime) for x in rows if x["name"].startswith("iPhone")]; print(max(candidates)[1])')
           printf 'device=%s\n' "$device" >> "$GITHUB_OUTPUT"
           bounded 60 xcrun simctl boot "$device"
           bounded 180 xcrun simctl bootstatus "$device" -b
