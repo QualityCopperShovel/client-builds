@@ -19,6 +19,12 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
+      - name: Check out validation helpers
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/run_with_timeout.py
+          sparse-checkout-cone-mode: false
+          path: workflow
       - name: Check out private ios source snapshot
         uses: actions/checkout@v4
         with:
@@ -44,15 +50,38 @@ jobs:
       - name: Test core contracts
         working-directory: native-client
         run: swift test
-      - name: Build iPhone and test simulator interactions
+      - name: Build iPhone
         working-directory: native-client
         run: |
           python3 generate_project.py
           xcodebuild -version
-          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for rows in d["devices"].values() for x in rows if x["name"].startswith("iPhone")))')
-          xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination 'generic/platform=iOS' -configuration Release CODE_SIGNING_ALLOWED=NO build
-          xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination "platform=iOS Simulator,id=$device" -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO test
-          xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination 'generic/platform=iOS' -configuration Release CODE_SIGNING_ALLOWED=NO build
+      - name: Boot one simulator before testing
+        id: simulator
+        working-directory: native-client
+        run: |
+          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
+          device=$(bounded 30 xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for rows in d["devices"].values() for x in rows if x["name"].startswith("iPhone")))')
+          printf 'device=%s\n' "$device" >> "$GITHUB_OUTPUT"
+          bounded 60 xcrun simctl boot "$device"
+          bounded 180 xcrun simctl bootstatus "$device" -b
+      - name: Test simulator interactions on that device
+        working-directory: native-client
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination "platform=iOS Simulator,id=$DEVICE" -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO test
+      - name: Capture simulator evidence even after a failed launch
+        if: always() && steps.simulator.outputs.device != ''
+        working-directory: native-client
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
+          mkdir -p screenshots
+          bounded 20 xcrun simctl io "$DEVICE" screenshot screenshots/last-simulator-state.png || true
+          bounded 30 xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots || true
+          bounded 20 xcrun simctl list devices booted
       - name: Retain immutable validation evidence
         if: always()
         uses: actions/upload-artifact@v4
