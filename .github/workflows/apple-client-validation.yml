@@ -70,7 +70,7 @@ jobs:
         env:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination "platform=iOS Simulator,id=$DEVICE" -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO test
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination "platform=iOS Simulator,id=$DEVICE" -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
       - name: Capture simulator evidence even after a failed launch
         if: always() && steps.simulator.outputs.device != ''
         working-directory: native-client
@@ -82,6 +82,7 @@ jobs:
           bounded 20 xcrun simctl io "$DEVICE" screenshot screenshots/last-simulator-state.png || true
           bounded 30 xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots || true
           bounded 20 xcrun simctl list devices booted
+          bounded 20 xcrun simctl spawn "$DEVICE" log show --last 3m --style compact --predicate '(process == "runningboardd" OR process == "amfid" OR process == "SpringBoard") AND eventMessage CONTAINS "com.fairystack.ios"' > screenshots/launch-events.txt || true
       - name: Retain immutable validation evidence
         if: always()
         uses: actions/upload-artifact@v4
