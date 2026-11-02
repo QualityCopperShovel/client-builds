@@ -25,7 +25,9 @@ concurrency:
 
 jobs:
   upload:
-    runs-on: macos-15
+    # @lat: [[ios-runner]]
+    # The arm64 pool failed to assign a runner in run 41511969406.
+    runs-on: macos-15-intel
     timeout-minutes: 45
     env:
       BUILD_NUMBER: ${{ inputs.build_number }}

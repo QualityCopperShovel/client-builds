@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .build/
 dist/
+.lat-build
+
+lat.md/.cache/
