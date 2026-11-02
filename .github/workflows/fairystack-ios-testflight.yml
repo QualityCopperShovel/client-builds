@@ -123,7 +123,10 @@ jobs:
           SOURCE_REVISION: ${{ inputs.source_revision }}
         run: |
           set -euo pipefail
-          plist=build/FairyStack.xcarchive/Products/Applications/FairyStack.app/Info.plist
+          # The Fastfile in the source names the archive and IPA; each build makes exactly one of each.
+          archives=(build/*.xcarchive); apps=("${archives[0]}"/Products/Applications/*.app); ipas=(build/*.ipa)
+          [ "${#archives[@]}" -eq 1 ] && [ "${#apps[@]}" -eq 1 ] && [ "${#ipas[@]}" -eq 1 ] && [ -f "${ipas[0]}" ]
+          plist="${apps[0]}/Info.plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" = "$BUILD_NUMBER"
           test "$(/usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' "$plist")" = "false"
           {
@@ -131,8 +134,8 @@ jobs:
             echo "source_snapshot=$SOURCE_COMMIT"
             echo "build_number=$BUILD_NUMBER"
             echo "marketing_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
-            echo "archive_binary_sha256=$(shasum -a 256 build/FairyStack.xcarchive/Products/Applications/FairyStack.app/FairyStack | cut -d' ' -f1)"
-            echo "ipa_sha256=$(shasum -a 256 build/FairyStack.ipa | cut -d' ' -f1)"
+            echo "archive_binary_sha256=$(shasum -a 256 "${apps[0]}/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")" | cut -d' ' -f1)"
+            echo "ipa_sha256=$(shasum -a 256 "${ipas[0]}" | cut -d' ' -f1)"
             echo "xcode=$(xcodebuild -version | tr '\n' ' ')"
           } > ../testflight-receipt.txt
           cat ../testflight-receipt.txt

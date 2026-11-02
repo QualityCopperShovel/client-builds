@@ -61,8 +61,11 @@ jobs:
         working-directory: native-client
         run: |
           python3 generate_project.py
+          # The generator writes one project whose scheme, app target and executable share its name.
+          projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ] && [ -d "${projects[0]}" ]
+          printf 'APP_PROJECT=%s\nAPP_SCHEME=%s\n' "${projects[0]}" "${projects[0]%.xcodeproj}" >> "$GITHUB_ENV"
           xcodebuild -version
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination 'generic/platform=iOS' -configuration Release CODE_SIGNING_ALLOWED=NO build
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project "${projects[0]}" -scheme "${projects[0]%.xcodeproj}" -destination 'generic/platform=iOS' -configuration Release CODE_SIGNING_ALLOWED=NO build
       - name: Boot one simulator before testing
         id: simulator
         working-directory: native-client
@@ -79,7 +82,7 @@ jobs:
         env:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
       - name: Launch app directly and check that it stays running
         working-directory: native-client
         env:
@@ -87,8 +90,8 @@ jobs:
         run: |
           bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
           mkdir -p screenshots
-          bounded 30 xcrun simctl install "$DEVICE" dd/Build/Products/Debug-iphonesimulator/FairyStack.app
-          bounded 30 xcrun simctl launch --stdout="$PWD/screenshots/app-stdout.txt" --stderr="$PWD/screenshots/app-stderr.txt" "$DEVICE" com.fairystack.ios --fairystack-reset | tee screenshots/direct-launch.txt
+          bounded 30 xcrun simctl install "$DEVICE" "dd/Build/Products/Debug-iphonesimulator/$APP_SCHEME.app"
+          bounded 30 xcrun simctl launch --stdout="$PWD/screenshots/app-stdout.txt" --stderr="$PWD/screenshots/app-stderr.txt" "$DEVICE" com.fairystack.ios --excessivecode-reset | tee screenshots/direct-launch.txt
           pid=$(sed -n 's/^com.fairystack.ios: //p' screenshots/direct-launch.txt)
           test -n "$pid"
           sleep 5
@@ -100,7 +103,7 @@ jobs:
         env:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 xcodebuild -project FairyStack.xcodeproj -scheme FairyStack -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult test-without-building
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult test-without-building
       - name: Capture simulator evidence even after a failed launch
         if: always() && steps.simulator.outputs.device != ''
         working-directory: native-client
@@ -112,7 +115,7 @@ jobs:
           bounded 20 xcrun simctl io "$DEVICE" screenshot screenshots/last-simulator-state.png || true
           bounded 30 xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots || true
           bounded 20 xcrun simctl list devices booted
-          bounded 20 xcrun simctl spawn "$DEVICE" log show --last 15m --style compact --predicate 'process == "FairyStack" OR ((process == "runningboardd" OR process == "amfid" OR process == "SpringBoard") AND eventMessage CONTAINS "com.fairystack.ios")' > screenshots/launch-events.txt || true
+          bounded 20 xcrun simctl spawn "$DEVICE" log show --last 15m --style compact --predicate "process == \"$APP_SCHEME\" OR ((process == \"runningboardd\" OR process == \"amfid\" OR process == \"SpringBoard\") AND eventMessage CONTAINS \"com.fairystack.ios\")" > screenshots/launch-events.txt || true
       - name: Retain immutable validation evidence
         if: always()
         uses: actions/upload-artifact@v4
