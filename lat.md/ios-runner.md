@@ -21,9 +21,20 @@ Run 42073228317 built the device app, then timed out during first-run migration
 baseline 42070155210 used the same Intel label and iPhone 17 device. Its migration
 also ran close to the deadline. This is infrastructure failure, not a UIKit result.
 
-Preboot avoids compiler cache pressure during migration; that is a repair hypothesis,
-not proof of the old cause. Keep the 60-second boot and 180-second readiness limits.
-Retain runtime, memory, disk and boot progress in the existing screenshots artifact
-so a timeout leaves evidence even when GitHub's combined logs omit a failed step.
-Boot runs synchronously: failure prevents builds/tests and the always-run artifact
-step keeps the evidence. Do not retry a failed boot within the same job.
+Preboot alone failed in run 42075758783: the seeded iPhone 17 on iOS 26.2
+again timed out in LaunchServices migration. Preboot memory had no compression or
+swap, and the writable disk had 108 GiB free. Compiler pressure is not a supported
+explanation for this second failure.
+
+Validation now creates one fresh iPhone 16 on installed iOS 18.6. The retained
+runtime manifest confirms that runtime is available and supports the device and
+both runner architectures. This isolates the seeded 26.2 migration path; it is a
+repair to validate, not a proven UIKit pass. Never use known-broken 18.5 or silently
+fall back when 18.6 is absent. TestFlight stays on the distribution toolchain and
+is not gated on this infrastructure repair.
+
+Keep the 30-second create, 60-second boot and 180-second readiness limits. Retain
+selection, runtime, memory, disk and boot progress in the existing artifact so a
+timeout leaves evidence even if combined GitHub logs omit the failed step. Boot
+runs synchronously: failure prevents builds/tests, and always-run upload keeps
+evidence. Do not retry a failed boot within the same job.
