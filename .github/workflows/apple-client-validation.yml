@@ -23,7 +23,9 @@ permissions:
 jobs:
   validate:
     runs-on: ${{ inputs.runner || 'macos-15' }}
-    timeout-minutes: 20
+    # @lat: [[ios-runner#Job budget]]
+    # Covers every bounded step below plus runner overhead, so a step deadline fires first.
+    timeout-minutes: 45
     steps:
       - name: Check out validation helpers
         uses: actions/checkout@v4
@@ -83,7 +85,7 @@ jobs:
           bounded 180 xcrun simctl bootstatus "$device" -b 2>&1 | tee screenshots/simulator-bootstatus.txt
       - name: Test core contracts
         working-directory: native-client
-        run: swift test
+        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 swift test
       - name: Build iPhone
         working-directory: native-client
         run: |

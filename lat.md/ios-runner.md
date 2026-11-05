@@ -38,3 +38,18 @@ selection, runtime, memory, disk and boot progress in the existing artifact so a
 timeout leaves evidence even if combined GitHub logs omit the failed step. Boot
 runs synchronously: failure prevents builds/tests, and always-run upload keeps
 evidence. Do not retry a failed boot within the same job.
+
+## Job budget
+
+The job cap must exceed the sum of every step deadline, so a slow step fails with its own log.
+
+Run 42078029818 proved the iOS 18.6 repair: the fresh device booted in 144 seconds,
+the app launched, and XCTest started the first UI test. GitHub then cancelled the
+job at its 20-minute cap, 98 seconds into UI tests, with no test verdict. The cap
+was smaller than the steps' own deadlines, and `swift test` had none.
+
+Every step has its own deadline: boot 300 s, `swift test` 600 s, each build 360 s,
+direct launch about 110 s, UI tests 600 s and evidence capture about 90 s. The job
+cap of 45 minutes covers their sum plus checkout, upload and runner shutdown. A
+slow step must fail on its own deadline with its own log, never on the job cap.
+When adding or lengthening a step, keep this sum under the cap.
