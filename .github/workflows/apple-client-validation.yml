@@ -21,11 +21,66 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  # @lat: [[ios-runner#Job budget]]
+  # Two standard runners in parallel: one machine cannot compile three times and migrate a simulator in budget.
+  core:
     runs-on: ${{ inputs.runner || 'macos-15' }}
-    # @lat: [[ios-runner#Job budget]]
     # Covers every bounded step below plus runner overhead, so a step deadline fires first.
-    timeout-minutes: 50
+    timeout-minutes: 30
+    steps:
+      - name: Check out validation helpers
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/run_with_timeout.py
+          sparse-checkout-cone-mode: false
+          path: workflow
+      - name: Check out private ios source snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: QualityCopperShovel/fairystack
+          ref: ${{ inputs.source_commit }}
+          ssh-key: ${{ secrets.FAIRYSTACK_SOURCE_KEY }}
+          persist-credentials: false
+          path: native-client
+      - name: Verify source snapshot
+        working-directory: native-client
+        shell: bash
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+          REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          git log -1 --format=%B | grep -qx "Platform: ios"
+          git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+          rm -rf .git
+          printf 'revision=%s\nsnapshot=%s\n' "$REVISION" "$COMMIT" > "$GITHUB_WORKSPACE/source-receipt.txt"
+      - name: Select the current distribution toolchain
+        run: |
+          set -euo pipefail
+          # Match TestFlight. The runner default still selects Xcode 16.4.
+          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+      - name: Build core contracts
+        working-directory: native-client
+        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 720 swift build --build-tests
+      - name: Test core contracts
+        working-directory: native-client
+        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 swift test --skip-build
+      - name: Build iPhone
+        working-directory: native-client
+        run: |
+          python3 generate_project.py
+          # The generator writes one project whose scheme, app target and executable share its name.
+          projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ] && [ -d "${projects[0]}" ]
+          printf 'APP_PROJECT=%s\nAPP_SCHEME=%s\n' "${projects[0]}" "${projects[0]%.xcodeproj}" >> "$GITHUB_ENV"
+          xcodebuild -version
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project "${projects[0]}" -scheme "${projects[0]%.xcodeproj}" -destination 'generic/platform=iOS' -configuration Release CODE_SIGNING_ALLOWED=NO build
+  simulator:
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 35
     steps:
       - name: Check out validation helpers
         uses: actions/checkout@v4
@@ -83,18 +138,19 @@ jobs:
           df -h > screenshots/disk-before-boot.txt
           # Boot returns while first-run migration continues; compiling overlaps it.
           bounded 60 xcrun simctl boot "$device" 2>&1 | tee screenshots/simulator-boot.txt
-      - name: Test core contracts
-        working-directory: native-client
-        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 swift test
-      - name: Build iPhone
+      - name: Generate the Xcode project
         working-directory: native-client
         run: |
           python3 generate_project.py
           # The generator writes one project whose scheme, app target and executable share its name.
           projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ] && [ -d "${projects[0]}" ]
           printf 'APP_PROJECT=%s\nAPP_SCHEME=%s\n' "${projects[0]}" "${projects[0]%.xcodeproj}" >> "$GITHUB_ENV"
-          xcodebuild -version
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project "${projects[0]}" -scheme "${projects[0]%.xcodeproj}" -destination 'generic/platform=iOS' -configuration Release CODE_SIGNING_ALLOWED=NO build
+      - name: Build simulator tests
+        working-directory: native-client
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 540 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
       - name: Wait for simulator readiness
         working-directory: native-client
         env:
@@ -103,12 +159,6 @@ jobs:
           # @lat: [[ios-runner#Simulator first boot]]
           set -o pipefail
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 xcrun simctl bootstatus "$DEVICE" -b 2>&1 | tee screenshots/simulator-bootstatus.txt
-      - name: Build simulator tests
-        working-directory: native-client
-        env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
-        run: |
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
       - name: Launch app directly and check that it stays running
         working-directory: native-client
         env:

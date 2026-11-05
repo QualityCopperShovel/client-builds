@@ -14,7 +14,7 @@ Client source and source artifacts must never be added to this public repository
 
 ## Simulator first boot
 
-Validation starts the simulator before compiling and waits for readiness only before the simulator build.
+Validation starts the simulator before its build and waits for readiness only before launching.
 
 Run 42073228317 built the device app, then timed out during first-run migration
 (LaunchServices and MCProfile), before any app or UI test could run. The passing
@@ -37,8 +37,8 @@ Run 42082067159 used the same image, runtime and device, yet LaunchServices
 migration was still running at 162 seconds; in 42078029818 it ended near 77
 seconds and full readiness came at 114. First-boot migration speed varies by
 machine, so an idle wait at job start is fragile. `simctl boot` now returns while
-migration continues during Swift tests and the device build (about ten minutes).
-Readiness is checked just before the simulator build, with 300 seconds left.
+migration continues during the simulator build. Readiness is then checked with
+300 seconds left.
 
 Keep the 30-second create, 60-second boot and 300-second readiness limits. Retain
 selection, runtime, memory, disk and boot progress in the existing artifact so a
@@ -48,15 +48,16 @@ evidence. Do not retry a failed boot within the same job.
 
 ## Job budget
 
-The job cap must exceed the sum of every step deadline, so a slow step fails with its own log.
+Each job's cap must exceed the sum of its step deadlines, so a slow step fails with its own log.
 
-Run 42078029818 proved the iOS 18.6 repair: the fresh device booted in 144 seconds,
-the app launched, and XCTest started the first UI test. GitHub then cancelled the
-job at its 20-minute cap, 98 seconds into UI tests, with no test verdict. The cap
-was smaller than the steps' own deadlines, and `swift test` had none.
+Run 42078029818 hit the old 20-minute cap 98 seconds into UI tests. Run 42084161049
+then ran `swift test` beside simulator migration: the package build alone took 446
+seconds and the 600-second bound fired before tests finished. One 4-core Intel
+machine was compiling three times and migrating a simulator in sequence.
 
-Every step has its own deadline: boot start 120 s, readiness 300 s, `swift test` 600 s, each build 360 s,
-direct launch about 110 s, UI tests 600 s and evidence capture about 90 s. The job
-cap of 50 minutes covers their sum plus checkout, upload and runner shutdown. A
-slow step must fail on its own deadline with its own log, never on the job cap.
-When adding or lengthening a step, keep this sum under the cap.
+Validation now runs two parallel jobs on the chosen standard runner. `core` builds
+package tests (720 s), runs them (300 s) and builds the Release device app (360 s),
+capped at 30 minutes. `simulator` starts the device, builds for testing (540 s,
+overlapping migration), waits for readiness (300 s), launches directly, runs UI
+tests (600 s) and keeps evidence, capped at 35 minutes. A run passes only when both
+jobs pass. When adding or lengthening a step, keep its job's sum under the cap.
