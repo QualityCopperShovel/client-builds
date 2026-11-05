@@ -73,3 +73,21 @@ both arm64 and x86_64, even though the runner is Intel. The generated project
 defaults include both; the chosen simulator does not need both binaries.
 The workflow now restricts this validation build to the host chip. Device and
 TestFlight builds keep their own settings. Step and job deadlines stay the same.
+
+## Simulator discovery
+
+Run 42092304293 timed out during the first `xcrun simctl list runtimes -j`
+after 30 seconds, before device creation or compilation.
+
+The retained JSON was empty. No CoreSimulator logs or resource samples were captured because the old
+evidence step required a device ID. This does not establish why startup stalled
+and does not test the host-only build change. Core tests and the device build passed.
+
+Discovery now has its own step: tool lookup has 30 seconds and one cold-start
+runtime query has 120 seconds. There is no retry or fallback runtime. These
+bounds fit within the existing 35-minute simulator job cap. The longer first
+query accommodates service startup; it is not a proven fix for the old timeout.
+Start/end elapsed time, phase and status, stderr, memory and disk samples are
+retained. Any failed simulator job also captures process state and up to 200
+CoreSimulator service log lines, even before a device exists. These logs can
+distinguish tool lookup failure from a stalled service query on the next run.
