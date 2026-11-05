@@ -25,7 +25,7 @@ jobs:
     runs-on: ${{ inputs.runner || 'macos-15' }}
     # @lat: [[ios-runner#Job budget]]
     # Covers every bounded step below plus runner overhead, so a step deadline fires first.
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - name: Check out validation helpers
         uses: actions/checkout@v4
@@ -62,7 +62,7 @@ jobs:
           xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
           sudo xcode-select -s "$xcode"
           xcodebuild -version
-      - name: Boot one simulator before testing
+      - name: Start one simulator before compiling
         id: simulator
         working-directory: native-client
         run: |
@@ -81,8 +81,8 @@ jobs:
           printf 'runtime=%s\ndevice_type=%s\ndevice=%s\n' "$runtime" "$device_type" "$device" > screenshots/simulator-selection.txt
           vm_stat > screenshots/memory-before-boot.txt
           df -h > screenshots/disk-before-boot.txt
+          # Boot returns while first-run migration continues; compiling overlaps it.
           bounded 60 xcrun simctl boot "$device" 2>&1 | tee screenshots/simulator-boot.txt
-          bounded 180 xcrun simctl bootstatus "$device" -b 2>&1 | tee screenshots/simulator-bootstatus.txt
       - name: Test core contracts
         working-directory: native-client
         run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 swift test
@@ -95,6 +95,14 @@ jobs:
           printf 'APP_PROJECT=%s\nAPP_SCHEME=%s\n' "${projects[0]}" "${projects[0]%.xcodeproj}" >> "$GITHUB_ENV"
           xcodebuild -version
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project "${projects[0]}" -scheme "${projects[0]%.xcodeproj}" -destination 'generic/platform=iOS' -configuration Release CODE_SIGNING_ALLOWED=NO build
+      - name: Wait for simulator readiness
+        working-directory: native-client
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          # @lat: [[ios-runner#Simulator first boot]]
+          set -o pipefail
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 xcrun simctl bootstatus "$DEVICE" -b 2>&1 | tee screenshots/simulator-bootstatus.txt
       - name: Build simulator tests
         working-directory: native-client
         env:

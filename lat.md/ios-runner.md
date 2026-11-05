@@ -14,7 +14,7 @@ Client source and source artifacts must never be added to this public repository
 
 ## Simulator first boot
 
-Validation boots the chosen simulator before Swift tests and device compilation.
+Validation starts the simulator before compiling and waits for readiness only before the simulator build.
 
 Run 42073228317 built the device app, then timed out during first-run migration
 (LaunchServices and MCProfile), before any app or UI test could run. The passing
@@ -33,7 +33,14 @@ repair to validate, not a proven UIKit pass. Never use known-broken 18.5 or sile
 fall back when 18.6 is absent. TestFlight stays on the distribution toolchain and
 is not gated on this infrastructure repair.
 
-Keep the 30-second create, 60-second boot and 180-second readiness limits. Retain
+Run 42082067159 used the same image, runtime and device, yet LaunchServices
+migration was still running at 162 seconds; in 42078029818 it ended near 77
+seconds and full readiness came at 114. First-boot migration speed varies by
+machine, so an idle wait at job start is fragile. `simctl boot` now returns while
+migration continues during Swift tests and the device build (about ten minutes).
+Readiness is checked just before the simulator build, with 300 seconds left.
+
+Keep the 30-second create, 60-second boot and 300-second readiness limits. Retain
 selection, runtime, memory, disk and boot progress in the existing artifact so a
 timeout leaves evidence even if combined GitHub logs omit the failed step. Boot
 runs synchronously: failure prevents builds/tests, and always-run upload keeps
@@ -48,8 +55,8 @@ the app launched, and XCTest started the first UI test. GitHub then cancelled th
 job at its 20-minute cap, 98 seconds into UI tests, with no test verdict. The cap
 was smaller than the steps' own deadlines, and `swift test` had none.
 
-Every step has its own deadline: boot 300 s, `swift test` 600 s, each build 360 s,
+Every step has its own deadline: boot start 120 s, readiness 300 s, `swift test` 600 s, each build 360 s,
 direct launch about 110 s, UI tests 600 s and evidence capture about 90 s. The job
-cap of 45 minutes covers their sum plus checkout, upload and runner shutdown. A
+cap of 50 minutes covers their sum plus checkout, upload and runner shutdown. A
 slow step must fail on its own deadline with its own log, never on the job cap.
 When adding or lengthening a step, keep this sum under the cap.
