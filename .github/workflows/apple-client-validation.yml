@@ -145,12 +145,13 @@ jobs:
           # The generator writes one project whose scheme, app target and executable share its name.
           projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ] && [ -d "${projects[0]}" ]
           printf 'APP_PROJECT=%s\nAPP_SCHEME=%s\n' "${projects[0]}" "${projects[0]%.xcodeproj}" >> "$GITHUB_ENV"
+      # @lat: [[ios-runner#Simulator architecture]]
       - name: Build simulator tests
         working-directory: native-client
         env:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 540 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 540 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd ONLY_ACTIVE_ARCH=YES ARCHS="$(uname -m)" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
       - name: Wait for simulator readiness
         working-directory: native-client
         env:

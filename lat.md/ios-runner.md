@@ -61,3 +61,15 @@ capped at 30 minutes. `simulator` starts the device, builds for testing (540 s,
 overlapping migration), waits for readiness (300 s), launches directly, runs UI
 tests (600 s) and keeps evidence, capped at 35 minutes. A run passes only when both
 jobs pass. When adding or lengthening a step, keep its job's sum under the cap.
+
+## Simulator architecture
+
+Build simulator tests only for the runner's architecture. Pass `ONLY_ACTIVE_ARCH=YES`
+and `ARCHS="$(uname -m)"` to `build-for-testing` for the chosen device.
+
+Run 42089772549 passed core tests and the device build but hit the 540-second
+simulator build limit. Its log shows Swift dependency builds and app linking for
+both arm64 and x86_64, even though the runner is Intel. The generated project
+defaults include both; the chosen simulator does not need both binaries.
+The workflow now restricts this validation build to the host chip. Device and
+TestFlight builds keep their own settings. Step and job deadlines stay the same.
