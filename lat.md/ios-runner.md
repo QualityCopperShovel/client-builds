@@ -42,8 +42,8 @@ Readiness is checked just before the simulator build, with 300 seconds left.
 
 Keep the 30-second create, 60-second boot and 300-second readiness limits. Retain
 selection, runtime, memory, disk and boot progress in the existing artifact so a
-timeout leaves evidence even if combined GitHub logs omit the failed step. Boot
-runs synchronously: failure prevents builds/tests, and always-run upload keeps
+timeout leaves evidence even if combined GitHub logs omit the failed step. A failed boot
+start or readiness wait stops later steps, and always-run upload keeps
 evidence. Do not retry a failed boot within the same job.
 
 ## Job budget
