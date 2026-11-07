@@ -183,15 +183,33 @@ jobs:
           # @lat: [[ios-runner#Simulator first boot]]
           set -o pipefail
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 xcrun simctl bootstatus "$DEVICE" -b 2>&1 | tee screenshots/simulator-bootstatus.txt
+      # @lat: [[ios-runner#Simulator app startup]]
+      - name: Install simulator app
+        working-directory: native-client
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          set -euo pipefail
+          mkdir -p screenshots
+          started=$SECONDS
+          printf 'phase=install state=starting\n' | tee -a screenshots/app-startup.txt
+          trap 'status=$?; printf "phase=install state=terminal exit_code=%s elapsed_seconds=%s\n" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 90 xcrun simctl install "$DEVICE" "dd/Build/Products/Debug-iphonesimulator/$APP_SCHEME.app"
       - name: Launch app directly and check that it stays running
         working-directory: native-client
         env:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
+          set -euo pipefail
           bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
           mkdir -p screenshots
-          bounded 30 xcrun simctl install "$DEVICE" "dd/Build/Products/Debug-iphonesimulator/$APP_SCHEME.app"
-          bounded 30 xcrun simctl launch --stdout="$PWD/screenshots/app-stdout.txt" --stderr="$PWD/screenshots/app-stderr.txt" "$DEVICE" com.fairystack.ios --excessivecode-reset | tee screenshots/direct-launch.txt
+          phase=launch
+          started=$SECONDS
+          printf 'phase=%s state=starting\n' "$phase" | tee -a screenshots/app-startup.txt
+          trap 'status=$?; printf "phase=%s state=terminal exit_code=%s elapsed_seconds=%s\n" "$phase" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
+          bounded 60 xcrun simctl launch --stdout="$PWD/screenshots/app-stdout.txt" --stderr="$PWD/screenshots/app-stderr.txt" "$DEVICE" com.fairystack.ios --excessivecode-reset | tee screenshots/direct-launch.txt
+          printf 'phase=launch state=completed elapsed_seconds=%s\n' "$((SECONDS-started))" | tee -a screenshots/app-startup.txt
+          phase=running
           pid=$(sed -n 's/^com.fairystack.ios: //p' screenshots/direct-launch.txt)
           test -n "$pid"
           sleep 5
@@ -225,12 +243,12 @@ jobs:
           bounded 20 xcrun simctl io "$DEVICE" screenshot screenshots/last-simulator-state.png || true
           bounded 30 xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots || true
           bounded 20 xcrun simctl list devices booted
-          bounded 20 xcrun simctl spawn "$DEVICE" log show --last 15m --style compact --predicate "process == \"$APP_SCHEME\" OR ((process == \"runningboardd\" OR process == \"amfid\" OR process == \"SpringBoard\") AND eventMessage CONTAINS \"com.fairystack.ios\")" > screenshots/launch-events.txt || true
+          bounded 20 xcrun simctl spawn "$DEVICE" log show --last 15m --style compact --predicate "process == \"$APP_SCHEME\" OR ((process == \"runningboardd\" OR process == \"amfid\" OR process == \"SpringBoard\" OR process == \"installd\" OR process == \"installcoordinationd\") AND eventMessage CONTAINS \"com.fairystack.ios\")" > screenshots/launch-events.txt || true
       - name: Retain immutable validation evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: apple-client-validation-${{ inputs.source_revision }}
+          name: apple-client-validation-${{ inputs.source_revision }}-attempt-${{ github.run_attempt }}
           # Screenshots and the receipt only: an .xcresult bundle carries build logs from the private source.
           path: |
             source-receipt.txt

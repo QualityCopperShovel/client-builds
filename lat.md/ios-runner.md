@@ -91,3 +91,11 @@ Start/end elapsed time, phase and status, stderr, memory and disk samples are
 retained. Any failed simulator job also captures process state and up to 200
 CoreSimulator service log lines, even before a device exists. These logs can
 distinguish tool lookup failure from a stalled service query on the next run.
+
+## Simulator app startup
+
+Install and launch are separate traced phases with 90-second and 60-second limits. Neither retries in the same job; the existing 35-minute cap still exceeds the summed step limits.
+
+Validation 42401402861 attempts 1 and 2 timed out in a combined install/launch step. Simulator logs reported the app installed after about 15 seconds, but no launch result was saved. This does not prove which call stalled or an app crash. Phase start/terminal elapsed time and exit status now close that gap. Wider cold-start bounds allow the next call to finish or fail by name; they do not establish the old cause.
+
+Startup failure evidence includes installcoordinationd and installd for this bundle. The artifact name includes the run attempt: two old attempt artifacts had the same name, and downloading by run returned the first one's files. Preserve exact attempt identity when reviewing a rerun.
