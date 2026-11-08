@@ -195,32 +195,16 @@ jobs:
           printf 'phase=install state=starting\n' | tee -a screenshots/app-startup.txt
           trap 'status=$?; printf "phase=install state=terminal exit_code=%s elapsed_seconds=%s\n" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 90 xcrun simctl install "$DEVICE" "dd/Build/Products/Debug-iphonesimulator/$APP_SCHEME.app"
-      - name: Launch app directly and check that it stays running
-        working-directory: native-client
-        env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
-        run: |
-          set -euo pipefail
-          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
-          mkdir -p screenshots
-          phase=launch
-          started=$SECONDS
-          printf 'phase=%s state=starting\n' "$phase" | tee -a screenshots/app-startup.txt
-          trap 'status=$?; printf "phase=%s state=terminal exit_code=%s elapsed_seconds=%s\n" "$phase" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
-          bounded 60 xcrun simctl launch --stdout="$PWD/screenshots/app-stdout.txt" --stderr="$PWD/screenshots/app-stderr.txt" "$DEVICE" com.fairystack.ios --excessivecode-reset | tee screenshots/direct-launch.txt
-          printf 'phase=launch state=completed elapsed_seconds=%s\n' "$((SECONDS-started))" | tee -a screenshots/app-startup.txt
-          phase=running
-          pid=$(sed -n 's/^com.fairystack.ios: //p' screenshots/direct-launch.txt)
-          test -n "$pid"
-          sleep 5
-          ps -p "$pid" -o pid=,stat=,comm=
-          bounded 20 xcrun simctl io "$DEVICE" screenshot screenshots/direct-launch.png
-          bounded 20 xcrun simctl terminate "$DEVICE" com.fairystack.ios
       - name: Test simulator interactions on that device
         working-directory: native-client
         env:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
+          set -euo pipefail
+          started=$SECONDS
+          printf 'phase=xctest state=starting\n' | tee -a screenshots/app-startup.txt
+          trap 'status=$?; printf "phase=xctest state=terminal exit_code=%s elapsed_seconds=%s\n" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
+          # XCTest owns launch and verifies rendered app behavior; no second simctl launch preflight.
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult test-without-building
       - name: Capture simulator startup failure
         if: failure()

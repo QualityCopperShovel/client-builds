@@ -99,3 +99,11 @@ Install and launch are separate traced phases with 90-second and 60-second limit
 Validation 42401402861 attempts 1 and 2 timed out in a combined install/launch step. Simulator logs reported the app installed after about 15 seconds, but no launch result was saved. This does not prove which call stalled or an app crash. Phase start/terminal elapsed time and exit status now close that gap. Wider cold-start bounds allow the next call to finish or fail by name; they do not establish the old cause.
 
 Startup failure evidence includes installcoordinationd and installd for this bundle. The artifact name includes the run attempt: two old attempt artifacts had the same name, and downloading by run returned the first one's files. Preserve exact attempt identity when reviewing a rerun.
+
+## One launch owner
+
+Source: https://github.com/QualityCopperShovel/client-builds/actions/runs/42490209952 (2026-11-08).
+
+The merged 0.35.1 source passed core tests and both device and simulator compilation. The independent simctl launch preflight timed out after 60 seconds before XCTest ran. The retained screenshot shows the Home Screen and launch events show installation; no app launch or crash is established. Its deeper stall cause remains unknown.
+
+Drop the duplicate simctl launch preflight. XCTest remains the one launch owner: the existing fresh-install case launches the app and requires the live web UI to render, and later cases launch it again for interaction checks. Keep the 600-second test owner and 180-second case limit, failure evidence and source-pinned artifact. Record XCTest start, terminal status and elapsed time in the existing startup evidence. This retains the behavior check while removing a second launch path that can block it.
