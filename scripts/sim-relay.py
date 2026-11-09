@@ -89,10 +89,12 @@ def action(path, body):
             return axe('tap', '--id', str(body['id']))
         return axe('tap', '-x', str(body['x']), '-y', str(body['y']))
     if path == '/doubletap':
-        # Two full taps in one AXe session, so they land close enough for the page to see a double tap.
-        tap = 'touch -x %s -y %s --down --up' % (float(body['x']), float(body['y']))
-        gap = max(0.03, min(float(body.get('gap', 0.12)), 0.5))
-        return axe('batch', '--step', tap, '--step', 'sleep %s' % gap, '--step', tap)
+        # Two 'tap' steps in one AXe batch land about 0.18 s apart on AXe 1.6.0, inside WebKit's
+        # double-tap window; 'touch --down --up' steps land 0.8-2 s apart and never double-tap.
+        tap = 'tap -x %s -y %s' % (float(body['x']), float(body['y']))
+        gap = max(0.0, min(float(body.get('gap', 0)), 0.5))
+        steps = [tap, 'sleep %s' % gap, tap] if gap else [tap, tap]
+        return axe('batch', *[arg for step in steps for arg in ('--step', step)])
     if path == '/batch':
         # Ordered AXe steps (tap, touch, swipe, type, key, sleep ...) in one session, for timed gestures.
         steps = [str(step) for step in body['steps']][:50]
