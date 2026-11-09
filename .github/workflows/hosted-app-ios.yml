@@ -56,7 +56,7 @@ jobs:
           REVISION: ${{ inputs.source_revision }}
         run: |
           set -euo pipefail
-          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ && "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ && "$APP" =~ ^[a-z0-9][a-z0-9-]{1,40}$ ]]
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ && "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ && "$APP" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]]
           test "$(git rev-parse HEAD)" = "$COMMIT"
           git log -1 --format=%B | grep -qx 'Platform: hosted-ios'
           git log -1 --format=%B | grep -qx "App: $APP"
