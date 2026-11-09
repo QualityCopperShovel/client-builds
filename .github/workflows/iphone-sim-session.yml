@@ -82,13 +82,16 @@ jobs:
           device=$(bounded 30 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
           echo "device=$device" >> "$GITHUB_OUTPUT"
           bounded 60 xcrun simctl boot "$device"
-      # The same snapshot builds the same app, so later sessions on a revision skip the build.
-      - name: Restore a built app for this snapshot
+      # Same iOS source, same app: sessions on any revision with unchanged client files skip the build.
+      - name: Hash the client source
+        id: source-hash
+        run: echo "hash=$(cd native-client && find . -type f ! -path './dd/*' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -c1-40)" >> "$GITHUB_OUTPUT"
+      - name: Restore a built app for this source
         id: app-cache
         uses: actions/cache/restore@v4
         with:
           path: native-client/dd/Build/Products/Debug-iphonesimulator
-          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-${{ inputs.source_commit }}
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-${{ steps.source-hash.outputs.hash }}
       - name: Build the app for the simulator
         if: steps.app-cache.outputs.cache-hit != 'true'
         working-directory: native-client
@@ -105,7 +108,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: native-client/dd/Build/Products/Debug-iphonesimulator
-          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-${{ inputs.source_commit }}
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-${{ steps.source-hash.outputs.hash }}
       - name: Install and open the app
         working-directory: native-client
         env:
@@ -115,6 +118,8 @@ jobs:
           apps=(dd/Build/Products/Debug-iphonesimulator/*.app); [ "${#apps[@]}" -eq 1 ]
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 xcrun simctl bootstatus "$DEVICE" -b > /dev/null
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 90 xcrun simctl install "$DEVICE" "${apps[0]}"
+          # Grant the mic up front: its system alert blocks screen reads and screenshots.
+          xcrun simctl privacy "$DEVICE" grant microphone com.fairystack.ios || true
           xcrun simctl launch "$DEVICE" com.fairystack.ios --excessivecode-reset
       - name: Start relay and tunnel, encrypt the handoff
         env:
@@ -157,15 +162,10 @@ jobs:
           end=$(( $(date +%s) + MINUTES * 60 + 60 ))
           while kill -0 "$pid" 2>/dev/null && [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
           tail -3 evidence/relay.log
-      - name: Retain session evidence
-        if: always()
-        env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
-        run: |
-          [ -n "$DEVICE" ] && xcrun simctl io "$DEVICE" screenshot evidence/last-screen.png || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: session-evidence
-          path: evidence/
+          # Request log only: this repo is public, so no screenshots of private chats.
+          path: evidence/relay.log
           retention-days: 7
