@@ -23,11 +23,17 @@ on:
         required: false
         default: '30'
         type: string
+      runner:
+        description: Hosted macOS runner; macos-15-intel when arm64 capacity is short
+        required: false
+        default: macos-15
+        type: choice
+        options: [macos-15, macos-15-intel]
 permissions:
   contents: read
 jobs:
   session:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 90
     steps:
       - name: Check out relay
