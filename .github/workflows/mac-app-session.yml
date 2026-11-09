@@ -113,9 +113,11 @@ jobs:
             [ -n "$url" ] && break; sleep 2
           done
           [ -n "$url" ] || { echo "tunnel gave no address"; exit 1; }
-          echo "::add-mask::$url"
-          for _ in $(seq 60); do curl -fsS -m 5 "$url/health" > /dev/null 2>&1 && break; sleep 2; done
-          curl -fsS -m 5 "$url/health" > /dev/null
+          echo "::add-mask::$url"; echo "::add-mask::${url#https://}"
+          # The runner's resolver caches the brand-new name's first miss; check through DNS over HTTPS.
+          ok=""
+          for _ in $(seq 60); do curl -fsS -m 5 --doh-url https://1.1.1.1/dns-query "$url/health" > /dev/null 2>&1 && { ok=1; break; }; sleep 2; done
+          [ -n "$ok" ] || { echo "tunnel never answered /health"; exit 1; }
           echo "$PUBLIC_KEY" | base64 -d > pub.pem
           printf '{"url":"%s","token":"%s","deadline":%s}' "$url" "$token" "$DEADLINE" > plain.json
           openssl pkeyutl -encrypt -pubin -inkey pub.pem -pkeyopt rsa_padding_mode:oaep -in plain.json -out handoff/handoff.bin
