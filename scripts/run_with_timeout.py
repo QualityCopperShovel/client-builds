@@ -26,7 +26,7 @@ def main():
     try:
         result = child.wait(timeout=seconds)
     except subprocess.TimeoutExpired:
-        print(f'Timed out after {seconds}s: {sys.argv[2]}', file=sys.stderr, flush=True)
+        print(f'Timed out after {seconds:g}s: {sys.argv[2]}', file=sys.stderr, flush=True)
         result = 124
     finally:
         # Also close descendant-held pipes when the immediate parent exits first.

@@ -21,8 +21,6 @@ permissions:
   contents: read
 
 jobs:
-  # @lat: [[ios-runner#Job budget]]
-  # Two standard runners in parallel: one machine cannot compile three times and migrate a simulator in budget.
   core:
     runs-on: ${{ inputs.runner || 'macos-15' }}
     # Covers every bounded step below plus runner overhead, so a step deadline fires first.
@@ -66,23 +64,35 @@ jobs:
       - name: Verify descendant timeout and partial evidence
         timeout-minutes: 1
         run: python3 workflow/scripts/verify_codec_timeout.py
-      - name: Build core contracts
-        timeout-minutes: 5
-        working-directory: native-client
-        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 240 swift build --build-tests
-      - name: Test TinyAACProbeTests alone
+      - name: Prepare direct probe from verified private source
+        timeout-minutes: 1
+        run: python3 workflow/scripts/prepare_direct_codec.py
+      - name: Save preflight evidence before codec execution
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: codec-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            codec-evidence/descendant-timeout.json
+            codec-evidence/probe-plan.json
+            source-receipt.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Compile direct synchronous codec executable
         timeout-minutes: 3
-        working-directory: native-client
-        env:
-          EXCESSIVECODE_TINY_AAC_OUTPUT: ${{ github.workspace }}/codec-evidence
-        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 120 swift test --skip-build --filter TinyAACProbeTests
+        run: python3 workflow/scripts/run_with_timeout.py 90 xcrun swiftc -parse-as-library probe-window.swift native-client/CodecProbe/DirectCodecProbe.swift -o direct-codec-probe
+      - name: Run direct codec cases without XCTest or Swift test
+        timeout-minutes: 3
+        run: python3 workflow/scripts/run_with_timeout.py 135 python3 workflow/scripts/run_direct_codec.py
       - name: Retain partial synthetic codec evidence
         if: always()
+        timeout-minutes: 2
         uses: actions/upload-artifact@v4
         with:
           name: isolated-codec-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            codec-evidence/*.json*
+            codec-evidence/**/*.json*
+            codec-evidence/**/*.txt
             source-receipt.txt
           if-no-files-found: error
           retention-days: 14
