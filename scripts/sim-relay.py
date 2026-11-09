@@ -89,10 +89,11 @@ def action(path, body):
             return axe('tap', '--id', str(body['id']))
         return axe('tap', '-x', str(body['x']), '-y', str(body['y']))
     if path == '/doubletap':
-        # One AXe session, so the taps land close enough for the page to see a double tap.
-        tap = 'tap -x %s -y %s' % (float(body['x']), float(body['y']))
+        # Raw touch down/up in one AXe session, so the page sees two touches close enough for a double tap.
+        at = '-x %s -y %s' % (float(body['x']), float(body['y']))
         gap = max(0.03, min(float(body.get('gap', 0.1)), 0.5))
-        return axe('batch', '--step', tap, '--step', 'sleep %s' % gap, '--step', tap)
+        down, up = 'touch %s --down' % at, 'touch %s --up' % at
+        return axe('batch', '--step', down, '--step', up, '--step', 'sleep %s' % gap, '--step', down, '--step', up)
     if path == '/swipe':
         return axe('swipe', '--start-x', str(body['x1']), '--start-y', str(body['y1']), '--end-x', str(body['x2']),
                    '--end-y', str(body['y2']), '--duration', str(body.get('duration', 0.3)))
