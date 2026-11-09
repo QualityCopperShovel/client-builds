@@ -1,0 +1,209 @@
+name: Hosted iPhone app
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: App slug (app-configs/<slug>.json in the snapshot)
+        required: true
+        type: string
+      source_commit:
+        description: Private source snapshot (scripts/hosted_ios.py)
+        required: true
+        type: string
+      source_revision:
+        description: Excessive Code revision recorded in the snapshot
+        required: true
+        type: string
+      build_number:
+        description: Positive build number
+        required: true
+        type: string
+      mode:
+        description: Simulator validation, signed ad hoc IPA or TestFlight upload
+        required: true
+        type: choice
+        options: [validate, adhoc, testflight]
+      profile:
+        description: Encrypted provisioning profile (empty for validate)
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: hosted-ios-${{ inputs.app }}-${{ inputs.mode }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      APP: ${{ inputs.app }}
+      MODE: ${{ inputs.mode }}
+      BUILD_NUMBER: ${{ inputs.build_number }}
+    steps:
+      - name: Check out private snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: QualityCopperShovel/fairystack
+          ref: ${{ inputs.source_commit }}
+          ssh-key: ${{ secrets.FAIRYSTACK_SOURCE_KEY }}
+          persist-credentials: false
+          path: native-client
+      - name: Verify source snapshot
+        working-directory: native-client
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+          REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ && "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ && "$APP" =~ ^[a-z0-9][a-z0-9-]{1,40}$ ]]
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          git log -1 --format=%B | grep -qx 'Platform: hosted-ios'
+          git log -1 --format=%B | grep -qx "App: $APP"
+          git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+          test -f "app-configs/$APP.json"
+          rm -rf .git
+          bundle="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundle_id"])' "app-configs/$APP.json")"
+          [[ "$bundle" =~ ^com\.excessivecode\.app\.[a-z0-9.-]+$ ]]
+          echo "BUNDLE_ID=$bundle" >> "$GITHUB_ENV"
+      - name: Select Xcode and generate project
+        working-directory: native-client
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          test "$(xcodebuild -version | sed -nE '1s/Xcode ([0-9]+).*/\1/p')" -ge 26
+          python3 generate_hosted_app.py --config "app-configs/$APP.json" --output build/project > "$RUNNER_TEMP/hosted-build.log" 2>&1
+          test -d build/project/HostedApp.xcodeproj
+      - name: Simulator build and launch screenshots
+        working-directory: native-client/build/project
+        run: |
+          set -euo pipefail
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for rows in d["devices"].values() for x in rows if x["name"].startswith("iPhone")))')
+          xcodebuild -project HostedApp.xcodeproj -scheme HostedApp -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath sim CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION="$BUILD_NUMBER" build >> "$RUNNER_TEMP/hosted-build.log" 2>&1
+          app=sim/Build/Products/Debug-iphonesimulator/HostedApp.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")" = "$BUNDLE_ID"
+          xcrun simctl boot "$device"; xcrun simctl bootstatus "$device" -b > /dev/null
+          xcrun simctl install "$device" "$app"
+          mkdir -p "$GITHUB_WORKSPACE/out/screens"
+          for theme in light dark; do
+            xcrun simctl terminate "$device" "$BUNDLE_ID" >/dev/null 2>&1 || true
+            xcrun simctl ui "$device" appearance "$theme"
+            xcrun simctl launch "$device" "$BUNDLE_ID" > /dev/null
+            sleep 8
+            xcrun simctl io "$device" screenshot "$GITHUB_WORKSPACE/out/screens/launch-$theme.png" > /dev/null
+          done
+      - name: Install signing identity and app profile
+        if: inputs.mode != 'validate'
+        env:
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+          P12_BASE64: ${{ secrets.FAIRYSTACK_IOS_DIST_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.FAIRYSTACK_IOS_DIST_P12_PASSWORD }}
+          SEALED: ${{ inputs.profile }}
+          HOSTED_IOS_PASSWORD: ${{ secrets.HOSTED_IOS_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$SEALED" ] || { echo 'Profile input missing'; exit 1; }
+          certificate="$RUNNER_TEMP/distribution.p12"
+          keychain="$RUNNER_TEMP/hosted-ios.keychain-db"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 2700 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security > /dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$certificate"
+          profile="$RUNNER_TEMP/app.mobileprovision"
+          printf '%s' "$SEALED" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -base64 -A -pass env:HOSTED_IOS_PASSWORD | base64 --decode > "$profile"
+          plist="$(security cms -D -i "$profile")"
+          uuid="$(plutil -extract UUID raw - <<<"$plist")"
+          name="$(plutil -extract Name raw - <<<"$plist")"
+          app_id="$(plutil -extract Entitlements.application-identifier raw - <<<"$plist")"
+          test "$app_id" = "7ZPTPEXGRC.$BUNDLE_ID" || { echo 'Profile is for a different bundle id'; exit 1; }
+          echo "PROFILE_NAME=$name" >> "$GITHUB_ENV"
+          for folder in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$folder"; cp "$profile" "$folder/$uuid.mobileprovision"
+          done
+          rm -f "$profile"
+      - name: Archive and export signed app
+        if: inputs.mode != 'validate'
+        working-directory: native-client/build/project
+        run: |
+          set -euo pipefail
+          method=app-store-connect; [ "$MODE" = adhoc ] && method=release-testing
+          export METHOD="$method"
+          python3 - <<'PY'
+          import os,plistlib
+          with open('ExportOptions.plist','wb') as f:
+              plistlib.dump({'method':os.environ['METHOD'],'teamID':'7ZPTPEXGRC','signingStyle':'manual','signingCertificate':'Apple Distribution','provisioningProfiles':{os.environ['BUNDLE_ID']:os.environ['PROFILE_NAME']}},f)
+          PY
+          xcodebuild -project HostedApp.xcodeproj -scheme HostedApp -configuration Release -destination 'generic/platform=iOS' -archivePath HostedApp.xcarchive CURRENT_PROJECT_VERSION="$BUILD_NUMBER" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Distribution' DEVELOPMENT_TEAM=7ZPTPEXGRC HOSTED_APP_PROFILE="$PROFILE_NAME" archive >> "$RUNNER_TEMP/hosted-build.log" 2>&1
+          xcodebuild -exportArchive -archivePath HostedApp.xcarchive -exportPath export -exportOptionsPlist ExportOptions.plist >> "$RUNNER_TEMP/hosted-build.log" 2>&1
+          codesign --verify --deep --strict HostedApp.xcarchive/Products/Applications/HostedApp.app >> "$RUNNER_TEMP/hosted-build.log" 2>&1
+          plist=HostedApp.xcarchive/Products/Applications/HostedApp.app/Info.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" = "$BUNDLE_ID"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" = "$BUILD_NUMBER"
+          cp export/*.ipa "$GITHUB_WORKSPACE/out/HostedApp.ipa"
+      - name: Upload to TestFlight
+        if: inputs.mode == 'testflight'
+        env:
+          ASC_KEY_ID: ${{ secrets.FAIRYSTACK_IOS_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.FAIRYSTACK_IOS_ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.FAIRYSTACK_IOS_ASC_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          key="$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$key"; chmod 600 "$key"
+          xcrun altool --upload-app --type ios --file out/HostedApp.ipa --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" >> "$RUNNER_TEMP/hosted-build.log" 2>&1
+          rm -f "$key"
+      - name: Write build receipt
+        env:
+          REVISION: ${{ inputs.source_revision }}
+          SNAPSHOT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          {
+            echo "app=$APP"
+            echo "mode=$MODE"
+            echo "bundle_id=$BUNDLE_ID"
+            echo "revision=$REVISION"
+            echo "snapshot=$SNAPSHOT"
+            echo "build_number=$BUILD_NUMBER"
+            if [ -f out/HostedApp.ipa ]; then echo "ipa_sha256=$(shasum -a 256 out/HostedApp.ipa | cut -d' ' -f1)"; fi
+            echo "xcode=$(xcodebuild -version | tr '\n' ' ')"
+          } > out/hosted-receipt.txt
+          cat out/hosted-receipt.txt
+      - name: Retain package, screenshots and receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosted-ios-${{ inputs.app }}-${{ inputs.mode }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Encrypt private compiler diagnostics
+        if: always()
+        env:
+          HOSTED_IOS_PASSWORD: ${{ secrets.HOSTED_IOS_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/hosted-build.log" ]; then
+            openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -pass env:HOSTED_IOS_PASSWORD -in "$RUNNER_TEMP/hosted-build.log" -out hosted-build.log.enc
+            rm -f "$RUNNER_TEMP/hosted-build.log"
+          fi
+      - name: Retain encrypted diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosted-ios-${{ inputs.app }}-diagnostics
+          path: hosted-build.log.enc
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove temporary signing files
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/hosted-ios.keychain-db" || true
+          rm -f "$HOME"/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision "$HOME"/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
+          rm -f "$HOME"/.appstoreconnect/private_keys/*.p8
+          rm -rf native-client/build
