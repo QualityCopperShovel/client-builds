@@ -67,8 +67,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$COMMIT"
           git log -1 --format=%B | grep -qx "Platform: ios"
           git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
-          # The snapshot tree is the whole client source, so revisions with unchanged iOS files share one built app.
-          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+          # Key the built app on the snapshot tree minus test sources (UI tests embed web files), so
+          # revisions with unchanged app files share one build.
+          echo "tree=$(git ls-tree HEAD | awk -F'\t' '$2 != "UITests" && $2 != "Tests"' | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
           rm -rf .git
       # Boot in the background: the cold first boot overlaps tool setup, cache restore and the tunnel.
       - name: Start booting an iPhone 16 simulator
