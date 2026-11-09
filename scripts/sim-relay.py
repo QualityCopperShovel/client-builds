@@ -25,6 +25,7 @@ UDID = os.environ['DEVICE']
 BUNDLE = os.environ.get('APP_BUNDLE', 'com.fairystack.ios')
 IDLE = int(os.environ.get('IDLE_SECONDS', '900'))
 DEADLINE = float(os.environ['DEADLINE'])
+SCALE = int(os.environ.get('SCREEN_SCALE', '3'))  # iPhone 16: 3 pixels per point
 PORT = int(os.environ.get('RELAY_PORT', '8765'))
 LOG = open(os.environ.get('RELAY_LOG', 'evidence/relay.log'), 'a', buffering=1)
 last_request = time.time()
@@ -33,7 +34,7 @@ lock = threading.Lock()  # one simulator: run actions one at a time
 
 def run(cmd, timeout=60):
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    return {'exit_code': p.returncode, 'stdout': p.stdout[-20000:], 'stderr': p.stderr[-4000:]}
+    return {'exit_code': p.returncode, 'stdout': p.stdout[-2000000:], 'stderr': p.stderr[-4000:]}
 
 
 def axe(*args, timeout=60):
@@ -47,23 +48,13 @@ def shot():
         if r['exit_code']:
             raise RuntimeError(r['stderr'] or 'screenshot failed')
         # Scale to points so image pixels are tap coordinates.
-        w, h = points()
+        size = run(['sips', '-g', 'pixelWidth', '-g', 'pixelHeight', png], timeout=30)['stdout']
+        px = dict(line.split(': ') for line in size.split('\n')[1:] if ': ' in line)
+        w, h = int(px['  pixelWidth']) // SCALE, int(px['  pixelHeight']) // SCALE
         r = run(['sips', '-s', 'format', 'jpeg', '-s', 'formatOptions', '80', '-z', str(h), str(w), png, '--out', jpg], timeout=30)
         if r['exit_code']:
             raise RuntimeError(r['stderr'] or 'resize failed')
         return open(jpg, 'rb').read()
-
-
-_points = None
-
-
-def points():
-    global _points
-    if _points is None:
-        tree = json.loads(axe('describe-ui')['stdout'] or '[]')
-        frame = (tree[0] if isinstance(tree, list) and tree else tree).get('frame', {})
-        _points = (int(frame.get('width') or 393), int(frame.get('height') or 852))
-    return _points
 
 
 def launch(body):
@@ -150,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(404, {'error': 'unknown action ' + self.path})
                 status = 200
                 self.reply(200, result)
-        except (subprocess.TimeoutExpired, RuntimeError, ValueError, TypeError) as e:
+        except Exception as e:  # any failure answers, so the tunnel never shows a bare 502
             status = 502
             self.reply(502, {'error': type(e).__name__ + ': ' + str(e)[:500]})
         finally:
