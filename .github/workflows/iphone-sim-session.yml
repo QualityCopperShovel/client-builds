@@ -71,15 +71,6 @@ jobs:
           # revisions with unchanged app files share one build.
           echo "tree=$(git ls-tree HEAD | awk -F'\t' '$2 != "UITests" && $2 != "Tests"' | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
           rm -rf .git
-          echo "image=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
-      # A device that has booted once boots in seconds; its first boot takes minutes. The cached copy is
-      # saved right after that first boot, before the app is installed or anything signs in.
-      - name: Restore a booted-once simulator
-        id: device-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/simdevice
-          key: iphone-sim-device-${{ inputs.runner || 'macos-15' }}-${{ steps.source.outputs.image }}-iOS-18-6-v1
       # Boot in the background: the cold first boot overlaps tool setup, cache restore and the tunnel.
       - name: Start booting an iPhone 16 simulator
         id: simulator
@@ -89,17 +80,11 @@ jobs:
           xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
           sudo xcode-select -s "$xcode"
           runtime=com.apple.CoreSimulator.SimRuntime.iOS-18-6
-          devices=~/Library/Developer/CoreSimulator/Devices
-          device=""
-          if [ -f "$RUNNER_TEMP/simdevice/udid" ]; then
-            device=$(cat "$RUNNER_TEMP/simdevice/udid")
-            mkdir -p "$devices" && tar -xf "$RUNNER_TEMP/simdevice/device.tar" -C "$devices"
-            rm -rf "$RUNNER_TEMP/simdevice"
-            killall -9 com.apple.CoreSimulator.CoreSimulatorService 2>/dev/null || true
-            bounded 180 xcrun simctl list devices | grep -q "$device" || { echo "restored simulator not listed; creating one"; device=""; }
-          fi
-          [ -n "$device" ] || device=$(bounded 180 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
+          # The first simctl call starts CoreSimulator, which took over 60 s on a fresh runner.
+          device=$(bounded 180 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
           echo "device=$device" >> "$GITHUB_OUTPUT"
+          # Which runtimes already have a shared cache here (a missing one is built on first boot, minutes).
+          ls /Library/Developer/CoreSimulator/Caches/dyld/*/ 2>/dev/null || true
           nohup python3 workflow/scripts/run_with_timeout.py 240 xcrun simctl boot "$device" > "$RUNNER_TEMP/boot.log" 2>&1 &
       - name: Install AXe and cloudflared
         env:
@@ -160,26 +145,6 @@ jobs:
         with:
           path: native-client/dd/Build/Products/Debug-iphonesimulator
           key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}
-      - name: Keep a booted-once copy of the simulator
-        if: steps.device-cache.outputs.cache-hit != 'true'
-        env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
-        run: |
-          set -euo pipefail
-          bounded() { python3 workflow/scripts/run_with_timeout.py "$@"; }
-          bounded 300 xcrun simctl bootstatus "$DEVICE" -b > /dev/null || { cat "$RUNNER_TEMP/boot.log"; exit 1; }
-          bounded 60 xcrun simctl shutdown "$DEVICE"
-          mkdir -p "$RUNNER_TEMP/simdevice"
-          echo "$DEVICE" > "$RUNNER_TEMP/simdevice/udid"
-          tar -cf "$RUNNER_TEMP/simdevice/device.tar" -C ~/Library/Developer/CoreSimulator/Devices "$DEVICE"
-          du -sh "$RUNNER_TEMP/simdevice/device.tar"
-          nohup python3 workflow/scripts/run_with_timeout.py 240 xcrun simctl boot "$DEVICE" > "$RUNNER_TEMP/boot.log" 2>&1 &
-      - name: Save the booted-once simulator
-        if: steps.device-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/simdevice
-          key: iphone-sim-device-${{ inputs.runner || 'macos-15' }}-${{ steps.source.outputs.image }}-iOS-18-6-v1
       - name: Install and open the app
         working-directory: native-client
         env:
