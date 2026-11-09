@@ -157,6 +157,8 @@ jobs:
           bounded 90 xcrun simctl install "$DEVICE" "${apps[0]}"
           # Grant the mic up front: its system alert blocks screen reads and screenshots.
           xcrun simctl privacy "$DEVICE" grant microphone com.fairystack.ios || true
+          # Test phones never share a location; denying it up front stops the iOS location prompt covering every first screenshot.
+          xcrun simctl privacy "$DEVICE" revoke location com.fairystack.ios || true
           xcrun simctl launch "$DEVICE" com.fairystack.ios --excessivecode-reset
       - name: Encrypt the handoff
         env:
