@@ -54,6 +54,7 @@ jobs:
           persist-credentials: false
           path: native-client
       - name: Verify source snapshot
+        id: source
         working-directory: native-client
         env:
           COMMIT: ${{ inputs.source_commit }}
@@ -66,45 +67,56 @@ jobs:
           test "$(git rev-parse HEAD)" = "$COMMIT"
           git log -1 --format=%B | grep -qx "Platform: ios"
           git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+          # The snapshot tree is the whole client source, so revisions with unchanged iOS files share one built app.
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
           rm -rf .git
-      - name: Select Xcode, install AXe and cloudflared
-        env:
-          AXE_VERSION: ${{ inputs.axe_version || '1.6.0' }}
-        run: |
-          set -euo pipefail
-          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
-          sudo xcode-select -s "$xcode"
-          xcodebuild -version
-          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
-          python3 workflow/scripts/run_with_timeout.py 600 brew install cameroncooke/axe/axe cloudflared
-          if [ -n "$AXE_VERSION" ]; then
-            [[ "$AXE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-            mkdir -p "$RUNNER_TEMP/axe"
-            curl -fsSL -m 120 "https://github.com/cameroncooke/AXe/releases/download/v$AXE_VERSION/AXe-macOS-v$AXE_VERSION-universal.tar.gz" | tar xz -C "$RUNNER_TEMP/axe"
-            echo "$RUNNER_TEMP/axe" >> "$GITHUB_PATH"; export PATH="$RUNNER_TEMP/axe:$PATH"
-          fi
-          axe --version; cloudflared --version
-      - name: Boot an iPhone 16 simulator
+      # Boot in the background: the cold first boot overlaps tool setup, cache restore and the tunnel.
+      - name: Start booting an iPhone 16 simulator
         id: simulator
         run: |
           set -euo pipefail
           bounded() { python3 workflow/scripts/run_with_timeout.py "$@"; }
-          bounded 120 xcrun simctl list runtimes -j > runtimes.json
+          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
           runtime=com.apple.CoreSimulator.SimRuntime.iOS-18-6
-          python3 -c 'import json,sys; assert any(r["identifier"]==sys.argv[2] and r["isAvailable"] for r in json.load(open(sys.argv[1]))["runtimes"])' runtimes.json "$runtime"
-          device=$(bounded 30 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
+          device=$(bounded 60 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
           echo "device=$device" >> "$GITHUB_OUTPUT"
-          bounded 60 xcrun simctl boot "$device"
-      # Same iOS source, same app: sessions on any revision with unchanged client files skip the build.
-      - name: Hash the client source
-        id: source-hash
-        run: echo "hash=$(cd native-client && find . -type f ! -path './dd/*' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -c1-40)" >> "$GITHUB_OUTPUT"
+          nohup python3 workflow/scripts/run_with_timeout.py 240 xcrun simctl boot "$device" > "$RUNNER_TEMP/boot.log" 2>&1 &
+      - name: Install AXe and cloudflared
+        env:
+          AXE_VERSION: ${{ inputs.axe_version || '1.6.0' }}
+          CLOUDFLARED_VERSION: 2026.10.7
+        run: |
+          set -euo pipefail
+          [[ "$AXE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          arch=$([ "$(uname -m)" = arm64 ] && echo arm64 || echo amd64)
+          mkdir -p "$RUNNER_TEMP/axe" "$RUNNER_TEMP/bin"
+          curl -fsSL -m 120 "https://github.com/cameroncooke/AXe/releases/download/v$AXE_VERSION/AXe-macOS-v$AXE_VERSION-universal.tar.gz" | tar xz -C "$RUNNER_TEMP/axe" & axe_pid=$!
+          curl -fsSL -m 120 "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/cloudflared-darwin-$arch.tgz" | tar xz -C "$RUNNER_TEMP/bin" & cf_pid=$!
+          wait "$axe_pid"; wait "$cf_pid"
+          printf '%s\n' "$RUNNER_TEMP/axe" "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/axe/axe" --version; "$RUNNER_TEMP/bin/cloudflared" --version
+      - name: Start relay and tunnel
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
+          echo "$token" > "$RUNNER_TEMP/relay-token"
+          export RELAY_TOKEN="$token" DEADLINE=$(( $(date +%s) + MINUTES * 60 )) RELAY_LOG=evidence/relay.log
+          echo "$DEADLINE" > "$RUNNER_TEMP/relay-deadline"
+          nohup python3 workflow/scripts/sim-relay.py > evidence/relay-stdout.txt 2>&1 &
+          echo $! > relay.pid
+          nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765 > "$RUNNER_TEMP/tunnel.log" 2>&1 &
       - name: Restore a built app for this source
         id: app-cache
         uses: actions/cache/restore@v4
         with:
           path: native-client/dd/Build/Products/Debug-iphonesimulator
-          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-${{ steps.source-hash.outputs.hash }}
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}
       - name: Build the app for the simulator
         if: steps.app-cache.outputs.cache-hit != 'true'
         working-directory: native-client
@@ -112,6 +124,7 @@ jobs:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
           set -euo pipefail
+          xcodebuild -version
           python3 generate_project.py
           projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ]
           scheme="${projects[0]%.xcodeproj}"
@@ -121,46 +134,40 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: native-client/dd/Build/Products/Debug-iphonesimulator
-          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-${{ steps.source-hash.outputs.hash }}
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}
       - name: Install and open the app
         working-directory: native-client
         env:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
           set -euo pipefail
+          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
           apps=(dd/Build/Products/Debug-iphonesimulator/*.app); [ "${#apps[@]}" -eq 1 ]
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 xcrun simctl bootstatus "$DEVICE" -b > /dev/null
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 90 xcrun simctl install "$DEVICE" "${apps[0]}"
+          bounded 300 xcrun simctl bootstatus "$DEVICE" -b > /dev/null || { cat "$RUNNER_TEMP/boot.log"; exit 1; }
+          bounded 90 xcrun simctl install "$DEVICE" "${apps[0]}"
           # Grant the mic up front: its system alert blocks screen reads and screenshots.
           xcrun simctl privacy "$DEVICE" grant microphone com.fairystack.ios || true
           xcrun simctl launch "$DEVICE" com.fairystack.ios --excessivecode-reset
-      - name: Start relay and tunnel, encrypt the handoff
+      - name: Encrypt the handoff
         env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
           PUBLIC_KEY: ${{ inputs.public_key }}
-          MINUTES: ${{ inputs.minutes }}
         run: |
           set -euo pipefail
-          mkdir -p evidence handoff
-          token=$(openssl rand -hex 24)
-          echo "::add-mask::$token"
-          export RELAY_TOKEN="$token" DEADLINE=$(( $(date +%s) + MINUTES * 60 )) RELAY_LOG=evidence/relay.log
-          nohup python3 workflow/scripts/sim-relay.py > evidence/relay-stdout.txt 2>&1 &
-          echo $! > relay.pid
-          nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765 > "$RUNNER_TEMP/tunnel.log" 2>&1 &
+          mkdir -p handoff
+          token=$(cat "$RUNNER_TEMP/relay-token"); deadline=$(cat "$RUNNER_TEMP/relay-deadline")
           url=""
-          for _ in $(seq 60); do
+          for _ in $(seq 120); do
             url=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/tunnel.log" | head -1 || true)
-            [ -n "$url" ] && break; sleep 2
+            [ -n "$url" ] && break; sleep 1
           done
           [ -n "$url" ] || { echo "tunnel gave no address"; exit 1; }
           echo "::add-mask::$url"; echo "::add-mask::${url#https://}"
-          for _ in $(seq 60); do curl -fsS -m 5 --doh-url https://1.1.1.1/dns-query "$url/health" > /dev/null 2>&1 && break; sleep 2; done
+          for _ in $(seq 120); do curl -fsS -m 5 --doh-url https://1.1.1.1/dns-query "$url/health" > /dev/null 2>&1 && break; sleep 1; done
           curl -fsS -m 5 --doh-url https://1.1.1.1/dns-query "$url/health" > /dev/null
           echo "$PUBLIC_KEY" | base64 -d > pub.pem
-          printf '{"url":"%s","token":"%s","deadline":%s}' "$url" "$token" "$DEADLINE" > plain.json
+          printf '{"url":"%s","token":"%s","deadline":%s}' "$url" "$token" "$deadline" > plain.json
           openssl pkeyutl -encrypt -pubin -inkey pub.pem -pkeyopt rsa_padding_mode:oaep -in plain.json -out handoff/handoff.bin
-          rm plain.json
+          rm plain.json "$RUNNER_TEMP/relay-token"
       - name: Hand off the session
         uses: actions/upload-artifact@v4
         with:
