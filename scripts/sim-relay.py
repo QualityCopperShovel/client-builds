@@ -89,11 +89,14 @@ def action(path, body):
             return axe('tap', '--id', str(body['id']))
         return axe('tap', '-x', str(body['x']), '-y', str(body['y']))
     if path == '/doubletap':
-        # Raw touch down/up in one AXe session, so the page sees two touches close enough for a double tap.
-        at = '-x %s -y %s' % (float(body['x']), float(body['y']))
-        gap = max(0.03, min(float(body.get('gap', 0.1)), 0.5))
-        down, up = 'touch %s --down' % at, 'touch %s --up' % at
-        return axe('batch', '--step', down, '--step', up, '--step', 'sleep %s' % gap, '--step', down, '--step', up)
+        # Two full taps in one AXe session, so they land close enough for the page to see a double tap.
+        tap = 'touch -x %s -y %s --down --up' % (float(body['x']), float(body['y']))
+        gap = max(0.03, min(float(body.get('gap', 0.12)), 0.5))
+        return axe('batch', '--step', tap, '--step', 'sleep %s' % gap, '--step', tap)
+    if path == '/batch':
+        # Ordered AXe steps (tap, touch, swipe, type, key, sleep ...) in one session, for timed gestures.
+        steps = [str(step) for step in body['steps']][:50]
+        return axe('batch', *[arg for step in steps for arg in ('--step', step)], timeout=120)
     if path == '/swipe':
         return axe('swipe', '--start-x', str(body['x1']), '--start-y', str(body['y1']), '--end-x', str(body['x2']),
                    '--end-y', str(body['y2']), '--duration', str(body.get('duration', 0.3)))
