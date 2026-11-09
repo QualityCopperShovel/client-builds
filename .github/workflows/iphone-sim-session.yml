@@ -96,9 +96,9 @@ jobs:
             mkdir -p "$devices" && tar -xf "$RUNNER_TEMP/simdevice/device.tar" -C "$devices"
             rm -rf "$RUNNER_TEMP/simdevice"
             killall -9 com.apple.CoreSimulator.CoreSimulatorService 2>/dev/null || true
-            bounded 60 xcrun simctl list devices | grep -q "$device" || { echo "restored simulator not listed; creating one"; device=""; }
+            bounded 180 xcrun simctl list devices | grep -q "$device" || { echo "restored simulator not listed; creating one"; device=""; }
           fi
-          [ -n "$device" ] || device=$(bounded 60 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
+          [ -n "$device" ] || device=$(bounded 180 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
           echo "device=$device" >> "$GITHUB_OUTPUT"
           nohup python3 workflow/scripts/run_with_timeout.py 240 xcrun simctl boot "$device" > "$RUNNER_TEMP/boot.log" 2>&1 &
       - name: Install AXe and cloudflared
