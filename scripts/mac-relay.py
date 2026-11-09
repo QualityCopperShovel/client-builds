@@ -72,15 +72,18 @@ def shot():
 def ui():
     """Windows of the app with their controls (names, roles, positions, sizes) from System Events."""
     script = f'''
+on xy(p)
+  return ((item 1 of p) as text) & "," & ((item 2 of p) as text)
+end xy
 set out to ""
 tell application "System Events"
   if not (exists process "{PROCESS}") then return "app not running"
   tell process "{PROCESS}"
     repeat with w in windows
-      set out to out & "window " & (name of w as text) & " " & (position of w as text) & " " & (size of w as text) & linefeed
+      set out to out & "window " & (name of w as text) & " at " & my xy(position of w) & " size " & my xy(size of w) & linefeed
       repeat with e in (UI elements of w)
         try
-          set out to out & "  " & (role of e as text) & " " & (description of e as text) & " " & (position of e as text) & " " & (size of e as text) & linefeed
+          set out to out & "  " & (role of e as text) & " " & (description of e as text) & " at " & my xy(position of e) & " size " & my xy(size of e) & linefeed
         end try
       end repeat
     end repeat
