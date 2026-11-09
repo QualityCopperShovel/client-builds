@@ -145,5 +145,8 @@ jobs:
         if: always()
         with:
           name: session-evidence
-          path: evidence/
+          # Logs only: this repo is public, so no screenshots of the app.
+          path: |
+            evidence/relay.log
+            evidence/display.txt
           retention-days: 7
