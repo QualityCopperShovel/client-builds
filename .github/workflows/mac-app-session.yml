@@ -1,6 +1,7 @@
 name: Mac app session
 # An agent drives Excessive Code for Mac on a hosted Mac's screen, so testing never takes over
-# anyone's own Mac. The runner builds the app ad hoc (no Apple identity), opens it, serves
+# anyone's own Mac. The runner builds the app ad hoc (no Apple identity), or installs a published
+# signed zip from excessivecode.com when app_zip_url is given (release checks), opens it, serves
 # scripts/mac-relay.py through a Cloudflare quick tunnel and uploads its address and token
 # encrypted to the caller's one-time public key (native/mac/desktop.py).
 on:
@@ -22,6 +23,16 @@ on:
         description: Session length in minutes (5-60)
         required: false
         default: '30'
+        type: string
+      app_zip_url:
+        description: Published app zip (https://excessivecode.com/assets/...) to install instead of an ad hoc build
+        required: false
+        default: ''
+        type: string
+      app_zip_sha256:
+        description: SHA-256 of app_zip_url; required with it
+        required: false
+        default: ''
         type: string
       runner:
         description: Hosted macOS runner; macos-15-intel when arm64 capacity is short
@@ -69,7 +80,28 @@ jobs:
           export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
           python3 workflow/scripts/run_with_timeout.py 600 brew install cliclick cloudflared
           cliclick -V; cloudflared --version
+      - name: Install the published app
+        if: inputs.app_zip_url != ''
+        env:
+          ZIP_URL: ${{ inputs.app_zip_url }}
+          ZIP_SHA: ${{ inputs.app_zip_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$ZIP_URL" =~ ^https://excessivecode\.com/assets/[A-Za-z0-9._-]+\.zip$ && "$ZIP_SHA" =~ ^[0-9a-f]{64}$ ]]
+          curl -fsS -m 300 -o "$RUNNER_TEMP/app.zip" "$ZIP_URL"
+          echo "$ZIP_SHA  $RUNNER_TEMP/app.zip" | shasum -a 256 -c -
+          rm -rf "$RUNNER_TEMP/unzipped"; ditto -x -k "$RUNNER_TEMP/app.zip" "$RUNNER_TEMP/unzipped"
+          bundle="$(find "$RUNNER_TEMP/unzipped" -maxdepth 1 -name '*.app' | head -1)"
+          [ -n "$bundle" ]
+          # Same place and name as the ad hoc build, so the app neither offers to move nor renames itself.
+          app="$HOME/Applications/Excessive Code.app"
+          mkdir -p "$HOME/Applications"; rm -rf "$app"; mv "$bundle" "$app"
+          codesign --verify --deep --strict "$app"
+          spctl --assess --type execute "$app" || echo "Gatekeeper assessment failed"
+          echo "APP_PATH=$app" >> "$GITHUB_ENV"
+          echo "APP_PROCESS=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" >> "$GITHUB_ENV"
       - name: Build the app ad hoc
+        if: inputs.app_zip_url == ''
         working-directory: client
         run: |
           set -euo pipefail

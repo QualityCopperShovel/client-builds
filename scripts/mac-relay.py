@@ -106,6 +106,21 @@ def launch(body):
     return run(['open', '-n', APP, *(['--args', *args] if args else [])], timeout=60)
 
 
+def crashes():
+    """The app's crash reports on this runner: name and first lines of each, newest first."""
+    found = []
+    for d in ('~/Library/Logs/DiagnosticReports', '/Library/Logs/DiagnosticReports'):
+        d = os.path.expanduser(d)
+        for name in (os.listdir(d) if os.path.isdir(d) else []):
+            if name.startswith(PROCESS) and name.endswith(('.ips', '.crash')):
+                path = os.path.join(d, name)
+                with open(path, errors='replace') as f:
+                    head = f.read(4000)
+                found.append({'name': name, 'mtime': os.path.getmtime(path), 'head': head})
+    found.sort(key=lambda c: -c['mtime'])
+    return {'exit_code': 0, 'crashes': found[:10]}
+
+
 def click(body, kind='c'):
     x, y = int(round(float(body['x']))), int(round(float(body['y'])))
     return run(['cliclick', '-r', f'{kind}:{x},{y}'], timeout=30)
@@ -152,6 +167,8 @@ def action(path, body):
         secs = max(5, min(int(body.get('seconds', 60)), 900))
         return run(['log', 'show', '--last', f'{secs}s', '--style', 'compact', '--predicate',
                     f'process == "{PROCESS}" OR process == "com.apple.WebKit.WebContent"'], timeout=90)
+    if path == '/crashes':
+        return crashes()
     raise KeyError(path)
 
 
