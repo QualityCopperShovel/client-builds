@@ -1,0 +1,88 @@
+name: Passage App Store screenshots
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Private Passage source snapshot
+        required: true
+        type: string
+      revision:
+        description: Passage source revision
+        required: true
+        type: string
+      build_number:
+        description: Source revision commit count
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: passage-store-screenshots
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      BUILD_NUMBER: ${{ inputs.build_number }}
+    steps:
+      - name: Check out private snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: QualityCopperShovel/fairystack
+          ref: ${{ inputs.source_commit }}
+          ssh-key: ${{ secrets.FAIRYSTACK_SOURCE_KEY }}
+          persist-credentials: false
+          path: native-client
+      - name: Verify source snapshot
+        working-directory: native-client
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+          REVISION: ${{ inputs.revision }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ && "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          git log -1 --format=%B | grep -qx 'Platform: passage-ios'
+          git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+          git log -1 --format=%B | grep -qx 'Fixture: false'
+          git log -1 --format=%B | grep '^Fixture:' > ../content-receipt.txt
+          rm -rf .git
+      - name: Select Xcode and generate project
+        working-directory: native-client
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          test "$(xcodebuild -version | sed -nE '1s/Xcode ([0-9]+).*/\1/p')" -ge 26
+          python3 generate_project.py > "$RUNNER_TEMP/passage-build.log" 2>&1
+      - name: Capture real App Store screens
+        working-directory: native-client
+        run: bash store/screenshots/run.sh >> "$RUNNER_TEMP/passage-build.log" 2>&1
+      - name: Retain App Store screens
+        uses: actions/upload-artifact@v4
+        with:
+          name: passage-store-screenshots
+          path: screens/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Encrypt private compiler diagnostics
+        if: always()
+        env:
+          LOG_PASSWORD: ${{ secrets.PASSAGE_IOS_LOG_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/passage-build.log" ]; then
+            openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -pass env:LOG_PASSWORD -in "$RUNNER_TEMP/passage-build.log" -out passage-build.log.enc
+            rm -f "$RUNNER_TEMP/passage-build.log"
+          fi
+      - name: Retain encrypted diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: passage-ios-diagnostics
+          path: passage-build.log.enc
+          if-no-files-found: ignore
+          retention-days: 14
