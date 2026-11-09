@@ -118,9 +118,10 @@ jobs:
           xcrun simctl install "$device" build/simulator/Build/Products/Debug-iphonesimulator/Passage.app
           mkdir -p ../screens
           for theme in light dark; do
+            xcrun simctl terminate "$device" com.excessivecode.passage >/dev/null 2>&1 || true
             xcrun simctl ui "$device" appearance "$theme"
             xcrun simctl launch "$device" com.excessivecode.passage
-            sleep 4
+            sleep 8
             xcrun simctl io "$device" screenshot "../screens/library-$theme.png"
           done
       - name: Upload to TestFlight
