@@ -18,7 +18,7 @@ on:
         description: Signed device build or TestFlight upload
         required: true
         type: choice
-        options: [adhoc, testflight]
+        options: [adhoc, testflight, review]
 permissions:
   contents: read
 concurrency:
@@ -64,6 +64,7 @@ jobs:
           test "$(xcodebuild -version | sed -nE '1s/Xcode ([0-9]+).*/\1/p')" -ge 26
           python3 generate_project.py > "$RUNNER_TEMP/passage-build.log" 2>&1
       - name: Install signing identity and Passage profile
+        if: inputs.mode != 'review'
         env:
           KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
           P12_BASE64: ${{ secrets.FAIRYSTACK_IOS_DIST_P12_BASE64 }}
@@ -89,6 +90,7 @@ jobs:
           done
           rm -f "$profile"
       - name: Build and export signed app
+        if: inputs.mode != 'review'
         working-directory: native-client
         env:
           MODE: ${{ inputs.mode }}
@@ -108,6 +110,7 @@ jobs:
           cp build/export/Passage.ipa ../Passage.ipa
           codesign --verify --deep --strict build/Passage.xcarchive/Products/Applications/Passage.app >> "$RUNNER_TEMP/passage-build.log" 2>&1
       - name: Simulator launch and theme screenshots
+        if: inputs.mode != 'review'
         working-directory: native-client
         run: |
           set -euo pipefail
@@ -124,6 +127,10 @@ jobs:
             sleep 8
             xcrun simctl io "$device" screenshot "../screens/library-$theme.png"
           done
+      - name: Review real playback in simulator
+        if: inputs.mode == 'review'
+        working-directory: native-client
+        run: bash Review/run.sh >> "$RUNNER_TEMP/passage-build.log" 2>&1
       - name: Upload to TestFlight
         if: inputs.mode == 'testflight'
         working-directory: native-client
@@ -140,6 +147,7 @@ jobs:
           xcrun altool --upload-app --type ios --file ../Passage.ipa --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" >> "$RUNNER_TEMP/passage-build.log" 2>&1
           rm -f "$key"
       - name: Write signed build receipt
+        if: inputs.mode != 'review'
         working-directory: native-client
         env:
           REVISION: ${{ inputs.revision }}
@@ -166,6 +174,7 @@ jobs:
             Passage.ipa
             passage-receipt.txt
             screens/
+            review-result.json
           if-no-files-found: error
           retention-days: 30
       - name: Encrypt private compiler diagnostics
