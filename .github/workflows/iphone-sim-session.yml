@@ -82,7 +82,15 @@ jobs:
           device=$(bounded 30 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
           echo "device=$device" >> "$GITHUB_OUTPUT"
           bounded 60 xcrun simctl boot "$device"
+      # The same snapshot builds the same app, so later sessions on a revision skip the build.
+      - name: Restore a built app for this snapshot
+        id: app-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: native-client/dd/Build/Products/Debug-iphonesimulator
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-${{ inputs.source_commit }}
       - name: Build the app for the simulator
+        if: steps.app-cache.outputs.cache-hit != 'true'
         working-directory: native-client
         env:
           DEVICE: ${{ steps.simulator.outputs.device }}
@@ -92,8 +100,21 @@ jobs:
           projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ]
           scheme="${projects[0]%.xcodeproj}"
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 900 xcodebuild -project "${projects[0]}" -scheme "$scheme" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd ONLY_ACTIVE_ARCH=YES ARCHS="$(uname -m)" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build > "$RUNNER_TEMP/build.log" 2>&1 || { tail -40 "$RUNNER_TEMP/build.log" | grep -E 'error|warning: fatal' ; exit 1; }
+      - name: Save the built app
+        if: steps.app-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: native-client/dd/Build/Products/Debug-iphonesimulator
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-${{ inputs.source_commit }}
+      - name: Install and open the app
+        working-directory: native-client
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          set -euo pipefail
+          apps=(dd/Build/Products/Debug-iphonesimulator/*.app); [ "${#apps[@]}" -eq 1 ]
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 xcrun simctl bootstatus "$DEVICE" -b > /dev/null
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 90 xcrun simctl install "$DEVICE" "dd/Build/Products/Debug-iphonesimulator/$scheme.app"
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 90 xcrun simctl install "$DEVICE" "${apps[0]}"
           xcrun simctl launch "$DEVICE" com.fairystack.ios --excessivecode-reset
       - name: Start relay and tunnel, encrypt the handoff
         env:
