@@ -159,13 +159,13 @@ jobs:
           cp Info.plist "$app/Contents/Info.plist"
           signing_args=()
           if [ -f Entitlements.plist ]; then
-            python3 -c 'import plistlib; d=plistlib.load(open("Entitlements.plist","rb")); assert d == {"com.apple.security.device.audio-input": True}, "Unexpected client entitlements"'
+            python3 -c 'import plistlib; d=plistlib.load(open("Entitlements.plist","rb")); assert d in ({"com.apple.security.device.audio-input": True}, {"com.apple.security.device.audio-input": True, "com.apple.security.personal-information.location": True}), "Unexpected client entitlements"'
             signing_args=(--entitlements Entitlements.plist)
           fi
           python3 "$GITHUB_WORKSPACE/scripts/codesign_with_retry.py" --force --options runtime --timestamp "${signing_args[@]}" --sign "$APPLE_SIGNING_IDENTITY" "$app"
           if [ -f Entitlements.plist ]; then
             codesign -d --entitlements :- "$app" > /tmp/client-entitlements.plist
-            python3 -c 'import plistlib; d=plistlib.load(open("/tmp/client-entitlements.plist","rb")); assert d.get("com.apple.security.device.audio-input") is True'
+            python3 -c 'import plistlib; d=plistlib.load(open("/tmp/client-entitlements.plist","rb")); assert d == plistlib.load(open("Entitlements.plist","rb")), "Signed client entitlements differ from source"'
           fi
           codesign --verify --deep --strict --verbose=2 "$app"
           upload="$RUNNER_TEMP/companion-notarization.zip"
