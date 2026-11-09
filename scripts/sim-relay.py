@@ -37,8 +37,22 @@ def run(cmd, timeout=60):
     return {'exit_code': p.returncode, 'stdout': p.stdout[-2000000:], 'stderr': p.stderr[-4000:]}
 
 
+# A stale simulator accessibility bridge fails every AXe read and tap with this, though the screen is fine.
+STALE_BRIDGE = 'No translation object returned'
+
+
 def axe(*args, timeout=60):
-    return run(['axe', *args, '--udid', UDID], timeout=timeout)
+    r = run(['axe', *args, '--udid', UDID], timeout=timeout)
+    if r['exit_code'] and STALE_BRIDGE in r['stderr'] + r['stdout']:
+        # launchd restarts the bridge at once; retry once after it settles.
+        run(['xcrun', 'simctl', 'spawn', UDID, 'launchctl', 'stop', 'com.apple.CoreSimulator.bridge'], timeout=20)
+        LOG.write('%s bridge restarted\n' % time.strftime('%H:%M:%S'))
+        for _ in range(5):
+            time.sleep(2)
+            r = run(['axe', *args, '--udid', UDID], timeout=timeout)
+            if not (r['exit_code'] and STALE_BRIDGE in r['stderr'] + r['stdout']):
+                break
+    return r
 
 
 def shot():
@@ -74,6 +88,11 @@ def action(path, body):
         if 'id' in body:
             return axe('tap', '--id', str(body['id']))
         return axe('tap', '-x', str(body['x']), '-y', str(body['y']))
+    if path == '/doubletap':
+        # One AXe session, so the taps land close enough for the page to see a double tap.
+        tap = 'tap -x %s -y %s' % (float(body['x']), float(body['y']))
+        gap = max(0.03, min(float(body.get('gap', 0.1)), 0.5))
+        return axe('batch', '--step', tap, '--step', 'sleep %s' % gap, '--step', tap)
     if path == '/swipe':
         return axe('swipe', '--start-x', str(body['x1']), '--start-y', str(body['y1']), '--end-x', str(body['x2']),
                    '--end-y', str(body['y2']), '--duration', str(body.get('duration', 0.3)))
