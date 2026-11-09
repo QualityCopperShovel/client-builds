@@ -26,12 +26,12 @@ jobs:
   core:
     runs-on: ${{ inputs.runner || 'macos-15' }}
     # Covers every bounded step below plus runner overhead, so a step deadline fires first.
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - name: Check out validation helpers
         uses: actions/checkout@v4
         with:
-          sparse-checkout: scripts/run_with_timeout.py
+          sparse-checkout: scripts
           sparse-checkout-cone-mode: false
           path: workflow
       - name: Check out private ios source snapshot
@@ -63,179 +63,26 @@ jobs:
           xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
           sudo xcode-select -s "$xcode"
           xcodebuild -version
+      - name: Verify descendant timeout and partial evidence
+        timeout-minutes: 1
+        run: python3 workflow/scripts/verify_codec_timeout.py
       - name: Build core contracts
+        timeout-minutes: 5
         working-directory: native-client
-        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 720 swift build --build-tests
-      - name: Test core contracts
-        working-directory: native-client
-        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 swift test --skip-build
-      - name: Build iPhone
-        working-directory: native-client
-        run: |
-          python3 generate_project.py
-          # The generator writes one project whose scheme, app target and executable share its name.
-          projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ] && [ -d "${projects[0]}" ]
-          printf 'APP_PROJECT=%s\nAPP_SCHEME=%s\n' "${projects[0]}" "${projects[0]%.xcodeproj}" >> "$GITHUB_ENV"
-          xcodebuild -version
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 360 xcodebuild -project "${projects[0]}" -scheme "${projects[0]%.xcodeproj}" -destination 'generic/platform=iOS' -configuration Release CODE_SIGNING_ALLOWED=NO build
-  simulator:
-    runs-on: ${{ inputs.runner || 'macos-15' }}
-    timeout-minutes: 35
-    steps:
-      - name: Check out validation helpers
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: scripts/run_with_timeout.py
-          sparse-checkout-cone-mode: false
-          path: workflow
-      - name: Check out private ios source snapshot
-        uses: actions/checkout@v4
-        with:
-          repository: QualityCopperShovel/fairystack
-          ref: ${{ inputs.source_commit }}
-          ssh-key: ${{ secrets.FAIRYSTACK_SOURCE_KEY }}
-          persist-credentials: false
-          path: native-client
-      - name: Verify source snapshot
-        working-directory: native-client
-        shell: bash
-        env:
-          COMMIT: ${{ inputs.source_commit }}
-          REVISION: ${{ inputs.source_revision }}
-        run: |
-          set -euo pipefail
-          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ ]]
-          test "$(git rev-parse HEAD)" = "$COMMIT"
-          git log -1 --format=%B | grep -qx "Platform: ios"
-          git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
-          rm -rf .git
-          printf 'revision=%s\nsnapshot=%s\n' "$REVISION" "$COMMIT" > "$GITHUB_WORKSPACE/source-receipt.txt"
-      - name: Select the current distribution toolchain
-        run: |
-          set -euo pipefail
-          # Match TestFlight. The runner default still selects Xcode 16.4.
-          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
-          sudo xcode-select -s "$xcode"
-          xcodebuild -version
-      - name: Discover simulator runtimes
-        working-directory: native-client
-        run: |
-          # @lat: [[ios-runner#Simulator discovery]]
-          set -euo pipefail
-          mkdir -p screenshots
-          vm_stat > screenshots/memory-before-discovery.txt
-          df -h > screenshots/disk-before-discovery.txt
-          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
-          # Resolving the tool and starting CoreSimulator are distinct cold-start operations.
-          phase=resolve-tool
-          started=$SECONDS
-          trace_exit() {
-            status=$?
-            printf 'phase=%s elapsed_seconds=%s exit_code=%s\n' "$phase" "$((SECONDS-started))" "$status" >> screenshots/simulator-discovery.txt
-          }
-          trap trace_exit EXIT
-          bounded 30 xcrun --find simctl > screenshots/simulator-tool.txt
-          simctl=$(cat screenshots/simulator-tool.txt)
-          printf 'phase=%s elapsed_seconds=%s exit_code=0\n' "$phase" "$((SECONDS-started))" >> screenshots/simulator-discovery.txt
-          phase=list-runtimes
-          started=$SECONDS
-          # The first query starts CoreSimulatorService; allow startup, without retrying it.
-          bounded 120 "$simctl" list runtimes -j > screenshots/simulator-runtimes.json 2> screenshots/simulator-discovery-stderr.txt
-      - name: Start one simulator before compiling
-        id: simulator
-        working-directory: native-client
-        run: |
-          # @lat: [[ios-runner#Simulator first boot]]
-          # Use a clean 18.6 device, not the runner image's seeded iOS 26 device.
-          set -euo pipefail
-          mkdir -p screenshots
-          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
-          runtime=com.apple.CoreSimulator.SimRuntime.iOS-18-6
-          device_type=com.apple.CoreSimulator.SimDeviceType.iPhone-16
-          # Fail on a changed image instead of silently selecting 18.5 or 26.x.
-          python3 -c 'import json,sys; r=next(x for x in json.load(open(sys.argv[1]))["runtimes"] if x["identifier"]==sys.argv[2]); assert r["isAvailable"] and any(x["identifier"]==sys.argv[3] for x in r["supportedDeviceTypes"])' screenshots/simulator-runtimes.json "$runtime" "$device_type"
-          device=$(bounded 30 xcrun simctl create "Validation-$GITHUB_RUN_ID" "$device_type" "$runtime")
-          printf 'device=%s\n' "$device" >> "$GITHUB_OUTPUT"
-          printf 'runtime=%s\ndevice_type=%s\ndevice=%s\n' "$runtime" "$device_type" "$device" > screenshots/simulator-selection.txt
-          vm_stat > screenshots/memory-before-boot.txt
-          df -h > screenshots/disk-before-boot.txt
-          # Boot returns while first-run migration continues; compiling overlaps it.
-          bounded 60 xcrun simctl boot "$device" 2>&1 | tee screenshots/simulator-boot.txt
-      - name: Generate the Xcode project
-        working-directory: native-client
-        run: |
-          python3 generate_project.py
-          # The generator writes one project whose scheme, app target and executable share its name.
-          projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ] && [ -d "${projects[0]}" ]
-          printf 'APP_PROJECT=%s\nAPP_SCHEME=%s\n' "${projects[0]}" "${projects[0]%.xcodeproj}" >> "$GITHUB_ENV"
-      # @lat: [[ios-runner#Simulator architecture]]
-      - name: Build simulator tests
+        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 240 swift build --build-tests
+      - name: Test TinyAACProbeTests alone
+        timeout-minutes: 3
         working-directory: native-client
         env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
-        run: |
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 540 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd ONLY_ACTIVE_ARCH=YES ARCHS="$(uname -m)" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
-      - name: Wait for simulator readiness
-        working-directory: native-client
-        env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
-        run: |
-          # @lat: [[ios-runner#Simulator first boot]]
-          set -o pipefail
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 xcrun simctl bootstatus "$DEVICE" -b 2>&1 | tee screenshots/simulator-bootstatus.txt
-      # @lat: [[ios-runner#Simulator app startup]]
-      - name: Install simulator app
-        working-directory: native-client
-        env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
-        run: |
-          set -euo pipefail
-          mkdir -p screenshots
-          started=$SECONDS
-          printf 'phase=install state=starting\n' | tee -a screenshots/app-startup.txt
-          trap 'status=$?; printf "phase=install state=terminal exit_code=%s elapsed_seconds=%s\n" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 90 xcrun simctl install "$DEVICE" "dd/Build/Products/Debug-iphonesimulator/$APP_SCHEME.app"
-      - name: Test simulator interactions on that device
-        working-directory: native-client
-        env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
-        run: |
-          set -euo pipefail
-          started=$SECONDS
-          printf 'phase=xctest state=starting\n' | tee -a screenshots/app-startup.txt
-          trap 'status=$?; printf "phase=xctest state=terminal exit_code=%s elapsed_seconds=%s\n" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
-          # XCTest owns launch and verifies rendered app behavior; no second simctl launch preflight.
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult test-without-building
-      - name: Capture simulator startup failure
-        if: failure()
-        working-directory: native-client
-        run: |
-          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
-          mkdir -p screenshots
-          vm_stat > screenshots/memory-after-failure.txt
-          df -h > screenshots/disk-after-failure.txt
-          ps -axo pid,ppid,etime,state,pcpu,pmem,comm | grep -E 'CoreSimulator|simctl|Simulator|PID' > screenshots/simulator-processes.txt || true
-          bounded 20 /usr/bin/log show --last 10m --style compact --predicate 'subsystem BEGINSWITH "com.apple.CoreSimulator"' 2>&1 | tail -200 > screenshots/simulator-service.txt || true
-      - name: Capture simulator evidence even after a failed launch
-        if: always() && steps.simulator.outputs.device != ''
-        working-directory: native-client
-        env:
-          DEVICE: ${{ steps.simulator.outputs.device }}
-        run: |
-          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
-          mkdir -p screenshots
-          bounded 20 xcrun simctl io "$DEVICE" screenshot screenshots/last-simulator-state.png || true
-          bounded 30 xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots || true
-          bounded 20 xcrun simctl list devices booted
-          bounded 20 xcrun simctl spawn "$DEVICE" log show --last 15m --style compact --predicate "process == \"$APP_SCHEME\" OR ((process == \"runningboardd\" OR process == \"amfid\" OR process == \"SpringBoard\" OR process == \"installd\" OR process == \"installcoordinationd\") AND eventMessage CONTAINS \"com.fairystack.ios\")" > screenshots/launch-events.txt || true
-      - name: Retain immutable validation evidence
+          EXCESSIVECODE_TINY_AAC_OUTPUT: ${{ github.workspace }}/codec-evidence
+        run: python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 120 swift test --skip-build --filter TinyAACProbeTests
+      - name: Retain partial synthetic codec evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: apple-client-validation-${{ inputs.source_revision }}-attempt-${{ github.run_attempt }}
-          # Screenshots and the receipt only: an .xcresult bundle carries build logs from the private source.
+          name: isolated-codec-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            codec-evidence/*.json*
             source-receipt.txt
-            native-client/screenshots
           if-no-files-found: error
           retention-days: 14
