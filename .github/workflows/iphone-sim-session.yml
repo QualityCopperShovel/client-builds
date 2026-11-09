@@ -23,7 +23,7 @@ on:
         default: '30'
         type: string
       axe_version:
-        description: AXe release to use; 1.6.0 taps and reads 3-4x faster than the latest (per-touch orientation checks). Empty = latest Homebrew build
+        description: AXe release (default 1.6.0, which taps and reads 3-4x faster than later builds)
         required: false
         default: ''
         type: string
