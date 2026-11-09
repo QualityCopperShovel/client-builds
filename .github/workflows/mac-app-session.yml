@@ -1,0 +1,141 @@
+name: Mac app session
+# An agent drives Excessive Code for Mac on a hosted Mac's screen, so testing never takes over
+# anyone's own Mac. The runner builds the app ad hoc (no Apple identity), opens it, serves
+# scripts/mac-relay.py through a Cloudflare quick tunnel and uploads its address and token
+# encrypted to the caller's one-time public key (native/mac/desktop.py).
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Private mac source snapshot commit (scripts/client_builds.py)
+        required: true
+        type: string
+      source_revision:
+        description: Canonical source revision recorded in the snapshot
+        required: true
+        type: string
+      public_key:
+        description: Base64 PEM RSA public key that encrypts the session handoff
+        required: true
+        type: string
+      minutes:
+        description: Session length in minutes (5-60)
+        required: false
+        default: '30'
+        type: string
+permissions:
+  contents: read
+jobs:
+  session:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Check out relay
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+          path: workflow
+      - name: Check out private mac source snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: QualityCopperShovel/fairystack
+          ref: ${{ inputs.source_commit }}
+          ssh-key: ${{ secrets.FAIRYSTACK_SOURCE_KEY }}
+          persist-credentials: false
+          path: client
+      - name: Verify source snapshot
+        working-directory: client
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+          REVISION: ${{ inputs.source_revision }}
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ && "$MINUTES" =~ ^[0-9]+$ ]]
+          (( MINUTES >= 5 && MINUTES <= 60 ))
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          git log -1 --format=%B | grep -qx "Platform: mac"
+          git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+          rm -rf .git
+      - name: Install cliclick and cloudflared
+        run: |
+          set -euo pipefail
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          python3 workflow/scripts/run_with_timeout.py 600 brew install cliclick cloudflared
+          cliclick -V; cloudflared --version
+      - name: Build the app ad hoc
+        working-directory: client
+        run: |
+          set -euo pipefail
+          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
+          bounded 900 xcrun swift build -c release > "$RUNNER_TEMP/build.log" 2>&1 || { grep -E 'error:' "$RUNNER_TEMP/build.log" | head -20; exit 1; }
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' Info.plist)"
+          # Not under /Volumes and not named FairyStack.app, so the app neither offers to move nor renames itself.
+          app="$HOME/Applications/Excessive Code.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp "$(xcrun swift build -c release --show-bin-path)/$executable" "$app/Contents/MacOS/$executable"
+          cp Info.plist "$app/Contents/Info.plist"
+          cp -R Resources/. "$app/Contents/Resources/" 2>/dev/null || true
+          codesign --force --sign - --entitlements Entitlements.plist "$app"
+          echo "APP_PATH=$app" >> "$GITHUB_ENV"
+          echo "APP_PROCESS=$executable" >> "$GITHUB_ENV"
+      - name: Open the app
+        run: |
+          set -euo pipefail
+          mkdir -p evidence handoff
+          system_profiler SPDisplaysDataType | grep -E 'Resolution|Display Type|Main Display' > evidence/display.txt || true
+          open -n "$APP_PATH"
+          for _ in $(seq 30); do pgrep -x "$APP_PROCESS" > /dev/null && break; sleep 1; done
+          pgrep -x "$APP_PROCESS" > /dev/null
+          sleep 10
+          screencapture -x -m evidence/first-screen.png || echo "screencapture failed"
+      - name: Start relay and tunnel, encrypt the handoff
+        env:
+          PUBLIC_KEY: ${{ inputs.public_key }}
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          set -euo pipefail
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
+          export RELAY_TOKEN="$token" DEADLINE=$(( $(date +%s) + MINUTES * 60 )) RELAY_LOG=evidence/relay.log
+          nohup python3 workflow/scripts/mac-relay.py > evidence/relay-stdout.txt 2>&1 &
+          echo $! > relay.pid
+          nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765 > "$RUNNER_TEMP/tunnel.log" 2>&1 &
+          url=""
+          for _ in $(seq 60); do
+            url=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/tunnel.log" | head -1 || true)
+            [ -n "$url" ] && break; sleep 2
+          done
+          [ -n "$url" ] || { echo "tunnel gave no address"; exit 1; }
+          echo "::add-mask::$url"
+          for _ in $(seq 60); do curl -fsS -m 5 "$url/health" > /dev/null 2>&1 && break; sleep 2; done
+          curl -fsS -m 5 "$url/health" > /dev/null
+          echo "$PUBLIC_KEY" | base64 -d > pub.pem
+          printf '{"url":"%s","token":"%s","deadline":%s}' "$url" "$token" "$DEADLINE" > plain.json
+          openssl pkeyutl -encrypt -pubin -inkey pub.pem -pkeyopt rsa_padding_mode:oaep -in plain.json -out handoff/handoff.bin
+          rm plain.json
+      - name: Hand off the session
+        uses: actions/upload-artifact@v4
+        with:
+          name: handoff
+          path: handoff/handoff.bin
+          retention-days: 1
+      - name: Serve until stop, idle or deadline
+        env:
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          pid=$(cat relay.pid)
+          end=$(( $(date +%s) + MINUTES * 60 + 60 ))
+          while kill -0 "$pid" 2>/dev/null && [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
+          tail -3 evidence/relay.log
+      - name: Retain session evidence
+        if: always()
+        run: |
+          mkdir -p evidence
+          screencapture -x -m evidence/last-screen.png || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: session-evidence
+          path: evidence/
+          retention-days: 7
