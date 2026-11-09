@@ -1,0 +1,144 @@
+name: iPhone Simulator session
+# An agent drives Excessive Code for iOS on a hosted Mac's simulator, so testing never takes over
+# anyone's own screen. The runner serves scripts/sim-relay.py through a Cloudflare quick tunnel and
+# uploads its address and token encrypted to the caller's one-time public key (native/ios/simulator.py).
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Private ios source snapshot commit (scripts/client_builds.py)
+        required: true
+        type: string
+      source_revision:
+        description: Canonical source revision recorded in the snapshot
+        required: true
+        type: string
+      public_key:
+        description: Base64 PEM RSA public key that encrypts the session handoff
+        required: true
+        type: string
+      minutes:
+        description: Session length in minutes (5-60)
+        required: false
+        default: '30'
+        type: string
+permissions:
+  contents: read
+jobs:
+  session:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Check out relay
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+          path: workflow
+      - name: Check out private ios source snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: QualityCopperShovel/fairystack
+          ref: ${{ inputs.source_commit }}
+          ssh-key: ${{ secrets.FAIRYSTACK_SOURCE_KEY }}
+          persist-credentials: false
+          path: native-client
+      - name: Verify source snapshot
+        working-directory: native-client
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+          REVISION: ${{ inputs.source_revision }}
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ && "$MINUTES" =~ ^[0-9]+$ ]]
+          (( MINUTES >= 5 && MINUTES <= 60 ))
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          git log -1 --format=%B | grep -qx "Platform: ios"
+          git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+          rm -rf .git
+      - name: Select Xcode, install AXe and cloudflared
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          python3 workflow/scripts/run_with_timeout.py 600 brew install cameroncooke/axe/axe cloudflared
+          axe --version; cloudflared --version
+      - name: Boot an iPhone 16 simulator
+        id: simulator
+        run: |
+          set -euo pipefail
+          bounded() { python3 workflow/scripts/run_with_timeout.py "$@"; }
+          bounded 120 xcrun simctl list runtimes -j > runtimes.json
+          runtime=com.apple.CoreSimulator.SimRuntime.iOS-18-6
+          python3 -c 'import json,sys; assert any(r["identifier"]==sys.argv[2] and r["isAvailable"] for r in json.load(open(sys.argv[1]))["runtimes"])' runtimes.json "$runtime"
+          device=$(bounded 30 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
+          echo "device=$device" >> "$GITHUB_OUTPUT"
+          bounded 60 xcrun simctl boot "$device"
+      - name: Build the app for the simulator
+        working-directory: native-client
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          set -euo pipefail
+          python3 generate_project.py
+          projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ]
+          scheme="${projects[0]%.xcodeproj}"
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 900 xcodebuild -project "${projects[0]}" -scheme "$scheme" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd ONLY_ACTIVE_ARCH=YES ARCHS="$(uname -m)" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build > "$RUNNER_TEMP/build.log" 2>&1 || { tail -40 "$RUNNER_TEMP/build.log" | grep -E 'error|warning: fatal' ; exit 1; }
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 300 xcrun simctl bootstatus "$DEVICE" -b > /dev/null
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 90 xcrun simctl install "$DEVICE" "dd/Build/Products/Debug-iphonesimulator/$scheme.app"
+          xcrun simctl launch "$DEVICE" com.fairystack.ios --excessivecode-reset
+      - name: Start relay and tunnel, encrypt the handoff
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+          PUBLIC_KEY: ${{ inputs.public_key }}
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence handoff
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
+          export RELAY_TOKEN="$token" DEADLINE=$(( $(date +%s) + MINUTES * 60 )) RELAY_LOG=evidence/relay.log
+          nohup python3 workflow/scripts/sim-relay.py > evidence/relay-stdout.txt 2>&1 &
+          echo $! > relay.pid
+          nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765 > "$RUNNER_TEMP/tunnel.log" 2>&1 &
+          url=""
+          for _ in $(seq 60); do
+            url=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/tunnel.log" | head -1 || true)
+            [ -n "$url" ] && break; sleep 2
+          done
+          [ -n "$url" ] || { echo "tunnel gave no address"; exit 1; }
+          echo "::add-mask::$url"
+          for _ in $(seq 60); do curl -fsS -m 5 "$url/health" > /dev/null 2>&1 && break; sleep 2; done
+          curl -fsS -m 5 "$url/health" > /dev/null
+          echo "$PUBLIC_KEY" | base64 -d > pub.pem
+          printf '{"url":"%s","token":"%s","deadline":%s}' "$url" "$token" "$DEADLINE" > plain.json
+          openssl pkeyutl -encrypt -pubin -inkey pub.pem -pkeyopt rsa_padding_mode:oaep -in plain.json -out handoff/handoff.bin
+          rm plain.json
+      - name: Hand off the session
+        uses: actions/upload-artifact@v4
+        with:
+          name: handoff
+          path: handoff/handoff.bin
+          retention-days: 1
+      - name: Serve until stop, idle or deadline
+        env:
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          pid=$(cat relay.pid)
+          end=$(( $(date +%s) + MINUTES * 60 + 60 ))
+          while kill -0 "$pid" 2>/dev/null && [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
+          tail -3 evidence/relay.log
+      - name: Retain session evidence
+        if: always()
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          [ -n "$DEVICE" ] && xcrun simctl io "$DEVICE" screenshot evidence/last-screen.png || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: session-evidence
+          path: evidence/
+          retention-days: 7
