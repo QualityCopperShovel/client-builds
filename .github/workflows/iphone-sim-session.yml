@@ -22,6 +22,11 @@ on:
         required: false
         default: '30'
         type: string
+      axe_version:
+        description: Pinned AXe release (e.g. 1.6.0) instead of the latest Homebrew build
+        required: false
+        default: ''
+        type: string
       runner:
         description: Hosted macOS runner; macos-15-intel when arm64 capacity is short
         required: false
@@ -63,6 +68,8 @@ jobs:
           git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
           rm -rf .git
       - name: Select Xcode, install AXe and cloudflared
+        env:
+          AXE_VERSION: ${{ inputs.axe_version }}
         run: |
           set -euo pipefail
           xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
@@ -70,6 +77,12 @@ jobs:
           xcodebuild -version
           export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
           python3 workflow/scripts/run_with_timeout.py 600 brew install cameroncooke/axe/axe cloudflared
+          if [ -n "$AXE_VERSION" ]; then
+            [[ "$AXE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            mkdir -p "$RUNNER_TEMP/axe"
+            curl -fsSL -m 120 "https://github.com/cameroncooke/AXe/releases/download/v$AXE_VERSION/AXe-macOS-v$AXE_VERSION-universal.tar.gz" | tar xz -C "$RUNNER_TEMP/axe"
+            echo "$RUNNER_TEMP/axe" >> "$GITHUB_PATH"; export PATH="$RUNNER_TEMP/axe:$PATH"
+          fi
           axe --version; cloudflared --version
       - name: Boot an iPhone 16 simulator
         id: simulator
