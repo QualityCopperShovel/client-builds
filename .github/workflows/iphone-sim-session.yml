@@ -160,7 +160,16 @@ jobs:
           stage() { local label=$1; shift; COMMAND_LABEL="$label" python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
           apps=(dd/Build/Products/Debug-iphonesimulator/*.app); [ "${#apps[@]}" -eq 1 ]
           stage boot_ready 300 xcrun simctl bootstatus "$DEVICE" -b > "$GITHUB_WORKSPACE/evidence/boot-ready.log" 2>&1 || { cat "$GITHUB_WORKSPACE/evidence/boot-ready.log"; cat "$RUNNER_TEMP/boot.log"; exit 1; }
-          stage install 90 xcrun simctl install "$DEVICE" "${apps[0]}"
+          stage install 90 xcrun simctl install "$DEVICE" "${apps[0]}" || {
+            install_status=$?
+            # Reuse the remaining startup/session budget and the existing evidence artifact.
+            python3 "$GITHUB_WORKSPACE/workflow/scripts/capture_install_failure.py" \
+              --device "$DEVICE" --startup-deadline "$COMMAND_DEADLINE_MONOTONIC" \
+              --session-deadline "$(cat "$RUNNER_TEMP/relay-deadline")" \
+              --output "$GITHUB_WORKSPACE/evidence/install-failure.json" \
+              --startup-log "$COMMAND_TIMING_LOG" || true
+            exit "$install_status"
+          }
           # Keep optional permission errors visible, but never continue after a stalled simctl.
           stage microphone_permission 20 xcrun simctl privacy "$DEVICE" grant microphone com.fairystack.ios || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
           stage location_permission 20 xcrun simctl privacy "$DEVICE" revoke location com.fairystack.ios || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
@@ -205,5 +214,6 @@ jobs:
           path: |
             evidence/relay.log
             evidence/startup.jsonl
+            evidence/install-failure.json
             evidence/boot-ready.log
           retention-days: 7

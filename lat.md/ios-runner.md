@@ -131,3 +131,29 @@ Run https://github.com/QualityCopperShovel/client-builds/actions/runs/4272996081
 The existing relay request owner now consumes X-Simulator-Timeout-Seconds, or bounded defaults for older clients. It reserves transport margin and caps work by the unchanged session deadline. The action lock, subprocesses and bridge recovery consume that same monotonic budget. Stop no longer waits behind an action. Fixed stage/state/request-ID metadata is retained without arguments, output or environment. Timeout replies carry HTTP 504 and a named stage; disconnected response delivery is cancelled in the log rather than relabeled as an AXe failure. The canonical simulator client propagates its existing HTTP timeout and reports structured terminal steps. Driver phase budgets must also cap each call by the remaining phase time.
 
 Native source 1c5 and its app cache stay unchanged. This repair runs only local relay/client fixtures; it starts no hosted build and claims no WK delegate pass. The old hosted simulator was stopped by cleanup, so a later authorized check must use the saved app cache rather than pretending that session is live.
+
+## Installer failure evidence
+
+[Run 42734946682](https://github.com/QualityCopperShovel/client-builds/actions/runs/42734946682)
+restored the pinned simulator app. Boot readiness took about 170 seconds. The
+install then used its full 90-second cap and timed out. The saved artifact lacked
+installer-service evidence, so the CoreSimulator cause remains unknown.
+
+On install failure, `scripts/capture_install_failure.py` writes one
+`install-failure.json` to the existing always-uploaded session evidence artifact.
+It appends running and terminal `install_evidence` rows to `startup.jsonl`. The
+original install exit code remains the workflow result; capture cannot turn a
+failed install into success. There is no retry.
+
+The snapshot shares at most 15 seconds across process state, memory, disk, device
+installer errors and host CoreSimulator errors. Both the existing 420-second
+startup deadline and absolute session deadline cap that allowance. An exhausted
+budget launches no commands and still saves terminal metadata. Each subprocess
+has a smaller cap; timeout kills its process group. Input is bounded to 256 KiB
+per command, with at most 100 service records and 32 process rows retained.
+
+Only fixed service names, numeric process/resource fields, allowlisted error
+domains and codes, and fixed message flags reach the artifact. Raw service
+messages, paths, arguments, environment, app content and identities are omitted.
+Flags describe matched error text, not a proved cause. This closes an evidence
+gap; it does not claim to fix the old install stall or prove native Back behavior.
