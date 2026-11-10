@@ -107,3 +107,16 @@ Source: https://github.com/QualityCopperShovel/client-builds/actions/runs/424902
 The merged 0.35.1 source passed core tests and both device and simulator compilation. The independent simctl launch preflight timed out after 60 seconds before XCTest ran. The retained screenshot shows the Home Screen and launch events show installation; no app launch or crash is established. Its deeper stall cause remains unknown.
 
 Drop the duplicate simctl launch preflight. XCTest remains the one launch owner: the existing fresh-install case launches the app and requires the live web UI to render, and later cases launch it again for interaction checks. Keep the 600-second test owner and 180-second case limit, failure evidence and source-pinned artifact. Record XCTest start, terminal status and elapsed time in the existing startup evidence. This retains the behavior check while removing a second launch path that can block it.
+
+
+## Interactive simulator startup
+
+Interactive sessions bound and trace boot readiness, install, permissions and launch before handing control to the agent. Native compilation is separate evidence.
+
+Run https://github.com/QualityCopperShovel/client-builds/actions/runs/42724593352 compiled the exact native candidate and saved its app cache, then spent about 22 minutes in the combined Install and open step before owner cancellation. No substep markers were saved. Boot readiness and install had wrappers; both privacy calls and launch were unbounded. The exact stalled call and CoreSimulator cause remain unknown.
+
+The same run's retained relay artifact says exit reason=idle before handoff. This does not explain the simctl stall. The relay's idle clock started during build preparation and could expire before an agent received control. With a workflow-owned handoff marker, the existing watchdog begins idle expiry only after the handoff artifact is uploaded. The original absolute DEADLINE remains active throughout preparation; it is never reset or enlarged. Relays without the marker retain their old behavior.
+
+Interactive startup now gives the five existing commands fixed labels and per-call limits (300, 90, 20, 20 and 60 seconds), sharing one 420-second monotonic deadline. A stalled permission call stops startup; non-timeout permission errors retain their prior optional behavior. The existing timeout helper saves running and terminal status, elapsed time and exit code in startup.jsonl without arguments, paths, environment or content. Boot progress and startup metadata join the existing always-uploaded session evidence. This names the failed boundary on the next authorized run; it does not prove the old stall is repaired.
+
+The app cache key, source snapshot SHA, runtime selection, job cap and requested session lifetime are unchanged. A future authorized check can reuse the built app. This repair itself dispatches no build and does not upload to TestFlight.

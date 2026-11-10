@@ -27,6 +27,8 @@ IDLE = int(os.environ.get('IDLE_SECONDS', '900'))
 DEADLINE = float(os.environ['DEADLINE'])
 SCALE = int(os.environ.get('SCREEN_SCALE', '3'))  # iPhone 16: 3 pixels per point
 PORT = int(os.environ.get('RELAY_PORT', '8765'))
+# The existing absolute deadline still applies while the build prepares handoff.
+HANDOFF_FILE = os.environ.get('RELAY_HANDOFF_FILE')
 LOG = open(os.environ.get('RELAY_LOG', 'evidence/relay.log'), 'a', buffering=1)
 last_request = time.time()
 lock = threading.Lock()  # one simulator: run actions one at a time
@@ -175,11 +177,18 @@ class Handler(BaseHTTPRequestHandler):
     do_GET = do_POST = handle_any
 
 
+# @lat: [[ios-runner#Interactive simulator startup]]
 def watchdog():
+    global last_request
+    handed_off = HANDOFF_FILE is None
     while True:
         time.sleep(10)
         now = time.time()
-        if now > DEADLINE or now - last_request > IDLE:
+        if not handed_off and os.path.exists(HANDOFF_FILE):
+            handed_off = True
+            last_request = now
+            LOG.write('handoff idle_timer_armed\n')
+        if now > DEADLINE or (handed_off and now - last_request > IDLE):
             LOG.write('exit reason=%s\n' % ('deadline' if now > DEADLINE else 'idle'))
             server.shutdown()
             return

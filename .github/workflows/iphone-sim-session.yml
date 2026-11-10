@@ -111,6 +111,8 @@ jobs:
           echo "::add-mask::$token"
           echo "$token" > "$RUNNER_TEMP/relay-token"
           export RELAY_TOKEN="$token" DEADLINE=$(( $(date +%s) + MINUTES * 60 )) RELAY_LOG=evidence/relay.log
+          export RELAY_HANDOFF_FILE="$RUNNER_TEMP/relay-handed-off"
+          rm -f "$RELAY_HANDOFF_FILE"
           echo "$DEADLINE" > "$RUNNER_TEMP/relay-deadline"
           nohup python3 workflow/scripts/sim-relay.py > evidence/relay-stdout.txt 2>&1 &
           echo $! > relay.pid
@@ -152,15 +154,17 @@ jobs:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
           set -euo pipefail
-          bounded() { python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
+          # @lat: [[ios-runner#Interactive simulator startup]]
+          export COMMAND_DEADLINE_MONOTONIC=$(python3 -c 'import time; print(time.monotonic()+420)')
+          export COMMAND_TIMING_LOG="$GITHUB_WORKSPACE/evidence/startup.jsonl"
+          stage() { local label=$1; shift; COMMAND_LABEL="$label" python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" "$@"; }
           apps=(dd/Build/Products/Debug-iphonesimulator/*.app); [ "${#apps[@]}" -eq 1 ]
-          bounded 300 xcrun simctl bootstatus "$DEVICE" -b > /dev/null || { cat "$RUNNER_TEMP/boot.log"; exit 1; }
-          bounded 90 xcrun simctl install "$DEVICE" "${apps[0]}"
-          # Grant the mic up front: its system alert blocks screen reads and screenshots.
-          xcrun simctl privacy "$DEVICE" grant microphone com.fairystack.ios || true
-          # Test phones never share a location; denying it up front stops the iOS location prompt covering every first screenshot.
-          xcrun simctl privacy "$DEVICE" revoke location com.fairystack.ios || true
-          xcrun simctl launch "$DEVICE" com.fairystack.ios --excessivecode-reset
+          stage boot_ready 300 xcrun simctl bootstatus "$DEVICE" -b > "$GITHUB_WORKSPACE/evidence/boot-ready.log" 2>&1 || { cat "$GITHUB_WORKSPACE/evidence/boot-ready.log"; cat "$RUNNER_TEMP/boot.log"; exit 1; }
+          stage install 90 xcrun simctl install "$DEVICE" "${apps[0]}"
+          # Keep optional permission errors visible, but never continue after a stalled simctl.
+          stage microphone_permission 20 xcrun simctl privacy "$DEVICE" grant microphone com.fairystack.ios || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
+          stage location_permission 20 xcrun simctl privacy "$DEVICE" revoke location com.fairystack.ios || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
+          stage launch 60 xcrun simctl launch "$DEVICE" com.fairystack.ios --excessivecode-reset
       - name: Encrypt the handoff
         env:
           PUBLIC_KEY: ${{ inputs.public_key }}
@@ -183,6 +187,8 @@ jobs:
           name: handoff
           path: handoff/handoff.bin
           retention-days: 1
+      - name: Arm idle expiry after handoff
+        run: touch "$RUNNER_TEMP/relay-handed-off"
       - name: Serve until stop, idle or deadline
         env:
           MINUTES: ${{ inputs.minutes }}
@@ -195,6 +201,9 @@ jobs:
         if: always()
         with:
           name: session-evidence
-          # Request log only: this repo is public, so no screenshots of private chats.
-          path: evidence/relay.log
+          # Content-free request/startup metadata and boot progress; no private screenshots.
+          path: |
+            evidence/relay.log
+            evidence/startup.jsonl
+            evidence/boot-ready.log
           retention-days: 7
