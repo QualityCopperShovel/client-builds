@@ -141,14 +141,14 @@ jobs:
           nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765 > "$RUNNER_TEMP/tunnel.log" 2>&1 &
           url=""
           for _ in $(seq 60); do
-            url=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/tunnel.log" | head -1 || true)
+            url=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/tunnel.log" | grep -v '^https://api\.' | head -1 || true)
             [ -n "$url" ] && break; sleep 2
           done
           [ -n "$url" ] || { echo "tunnel gave no address"; exit 1; }
           echo "::add-mask::$url"; echo "::add-mask::${url#https://}"
           # The runner's resolver caches the brand-new name's first miss; check through DNS over HTTPS.
           ok=""
-          for _ in $(seq 60); do curl -fsS -m 5 --doh-url https://1.1.1.1/dns-query "$url/health" > /dev/null 2>&1 && { ok=1; break; }; sleep 2; done
+          for _ in $(seq 60); do curl -fsS -m 5 --doh-url https://1.1.1.1/dns-query "$url/health" 2>/dev/null | grep -q deadline && { ok=1; break; }; sleep 2; done
           [ -n "$ok" ] || { echo "tunnel never answered /health"; exit 1; }
           echo "$PUBLIC_KEY" | base64 -d > pub.pem
           printf '{"url":"%s","token":"%s","deadline":%s}' "$url" "$token" "$DEADLINE" > plain.json

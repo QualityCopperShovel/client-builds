@@ -116,9 +116,10 @@ jobs:
           echo $! > relay.pid
           nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765 > "$RUNNER_TEMP/tunnel.log" 2>&1 &
           # Resolve the address and wait for it to answer while the simulator boots.
+          # A failed quick tunnel logs api.trycloudflare.com, whose /health also answers 200; only our relay's reply counts.
           nohup bash -c 'for _ in $(seq 240); do
-              url=$(grep -Eo "https://[a-z0-9-]+\.trycloudflare\.com" "$RUNNER_TEMP/tunnel.log" | head -1)
-              [ -n "$url" ] && curl -fsS -m 5 --doh-url https://1.1.1.1/dns-query "$url/health" > /dev/null 2>&1 && { echo "$url" > "$RUNNER_TEMP/tunnel-url"; exit 0; }
+              url=$(grep -Eo "https://[a-z0-9-]+\.trycloudflare\.com" "$RUNNER_TEMP/tunnel.log" | grep -v "^https://api\." | head -1)
+              [ -n "$url" ] && curl -fsS -m 5 --doh-url https://1.1.1.1/dns-query "$url/health" 2>/dev/null | grep -q deadline && { echo "$url" > "$RUNNER_TEMP/tunnel-url"; exit 0; }
               sleep 1
             done' > /dev/null 2>&1 &
       - name: Restore a built app for this source
