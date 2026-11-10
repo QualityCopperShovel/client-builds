@@ -157,3 +157,28 @@ domains and codes, and fixed message flags reach the artifact. Raw service
 messages, paths, arguments, environment, app content and identities are omitted.
 Flags describe matched error text, not a proved cause. This closes an evidence
 gap; it does not claim to fix the old install stall or prove native Back behavior.
+
+## Public relay handoff health
+
+[Run 42739322133](https://github.com/QualityCopperShovel/client-builds/actions/runs/42739322133)
+restored the cached app and completed install and launch. The final public health
+check returned HTTP 530, so no handoff or native cases ran.
+
+The earlier relay health response was 200. The saved artifact has no tunnel error body, so the
+precise Cloudflare fault remains unknown. This was not an SDK compile failure.
+
+The existing final handoff check now owns readiness; the detached early health
+poller is removed. `wait_relay_health.py` reads a bounded tunnel-log tail and
+excludes the provider API hostname. A 200 reply must be JSON with `ok: true` and
+the exact original relay deadline. Only then is the private tunnel address saved
+for encryption. Body text, addresses and tokens never enter saved metadata.
+
+The existing 120-second address-wait allowance now includes health retries.
+The original 420-second startup deadline is saved across workflow steps and caps
+handoff too, as does the original absolute session deadline. Curl keeps its
+five-second per-call cap. Fixed transient HTTP statuses (including 530) and
+transport failures may retry after at most one second; other failures and invalid
+relay replies fail immediately. Exhausted deadlines make no calls. The existing
+timeout helper owns the terminal handoff state; per-attempt HTTP/exit codes and
+elapsed time join `startup.jsonl` in the existing artifact. No job, runtime, build
+or session bound is increased. This repair does not dispatch a hosted run.
