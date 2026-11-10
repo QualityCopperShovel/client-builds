@@ -120,3 +120,14 @@ The same run's retained relay artifact says exit reason=idle before handoff. Thi
 Interactive startup now gives the five existing commands fixed labels and per-call limits (300, 90, 20, 20 and 60 seconds), sharing one 420-second monotonic deadline. A stalled permission call stops startup; non-timeout permission errors retain their prior optional behavior. The existing timeout helper saves running and terminal status, elapsed time and exit code in startup.jsonl without arguments, paths, environment or content. Boot progress and startup metadata join the existing always-uploaded session evidence. This names the failed boundary on the next authorized run; it does not prove the old stall is repaired.
 
 The app cache key, source snapshot SHA, runtime selection, job cap and requested session lifetime are unchanged. A future authorized check can reuse the built app. This repair itself dispatches no build and does not upload to TestFlight.
+
+
+## Simulator request deadlines
+
+The relay and its client share one request budget, including queue wait, AXe recovery and response margin. A slow UI read must end by name before its caller gives up.
+
+Run https://github.com/QualityCopperShovel/client-builds/actions/runs/42729960812 restored the exact built app, completed all startup stages and handed off. The fixture launch took about 10 seconds. The driver stopped waiting for /ui after 30 seconds; the relay logged a bridge restart and returned HTTP 502 after about 35 seconds. The artifact does not retain that exception, so the deeper AXe failure remains unknown. The old recovery allowed a 60-second command, a 20-second bridge stop, and up to five more attempts without an overall request deadline.
+
+The existing relay request owner now consumes X-Simulator-Timeout-Seconds, or bounded defaults for older clients. It reserves transport margin and caps work by the unchanged session deadline. The action lock, subprocesses and bridge recovery consume that same monotonic budget. Stop no longer waits behind an action. Fixed stage/state/request-ID metadata is retained without arguments, output or environment. Timeout replies carry HTTP 504 and a named stage; disconnected response delivery is cancelled in the log rather than relabeled as an AXe failure. The canonical simulator client propagates its existing HTTP timeout and reports structured terminal steps. Driver phase budgets must also cap each call by the remaining phase time.
+
+Native source 1c5 and its app cache stay unchanged. This repair runs only local relay/client fixtures; it starts no hosted build and claims no WK delegate pass. The old hosted simulator was stopped by cleanup, so a later authorized check must use the saved app cache rather than pretending that session is live.

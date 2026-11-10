@@ -12,6 +12,8 @@ Writes a content-free request log (path, status, ms) to evidence/relay.log.
 """
 import hmac
 import json
+import math
+import uuid
 import os
 import subprocess
 import sys
@@ -34,8 +36,43 @@ last_request = time.time()
 lock = threading.Lock()  # one simulator: run actions one at a time
 
 
-def run(cmd, timeout=60):
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+# @lat: [[ios-runner#Simulator request deadlines]]
+request_owner = threading.local()
+
+
+class RequestTimeout(TimeoutError):
+    def __init__(self, step):
+        self.step = step
+        super().__init__(step)
+
+
+def progress(step, state, code=None):
+    request_owner.step = step
+    row = {'request_id': getattr(request_owner, 'id', None), 'step': step, 'state': state}
+    if hasattr(request_owner, 'started'):
+        row['elapsed_ms'] = round((time.monotonic() - request_owner.started) * 1000)
+    if code is not None:
+        row['exit_code'] = code
+    # Metadata only: never command arguments, output, environment or typed content.
+    LOG.write(json.dumps(row, sort_keys=True) + '\n')
+
+
+def remaining(maximum, step):
+    budget = min(maximum, getattr(request_owner, 'deadline', float('inf')) - time.monotonic())
+    if budget <= 0:
+        raise RequestTimeout(step)
+    return budget
+
+
+def run(cmd, timeout=60, *, step='command', env=None):
+    progress(step, 'running')
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=remaining(timeout, step), env=env)
+    except subprocess.TimeoutExpired:
+        progress(step, 'timed_out', 124)
+        raise RequestTimeout(step) from None
+    progress(step, 'completed' if p.returncode == 0 else 'failed', p.returncode)
     return {'exit_code': p.returncode, 'stdout': p.stdout[-2000000:], 'stderr': p.stderr[-4000:]}
 
 
@@ -44,14 +81,14 @@ STALE_BRIDGE = 'No translation object returned'
 
 
 def axe(*args, timeout=60):
-    r = run(['axe', *args, '--udid', UDID], timeout=timeout)
+    r = run(['axe', *args, '--udid', UDID], timeout=timeout, step='axe_' + args[0].replace('-', '_'))
     if r['exit_code'] and STALE_BRIDGE in r['stderr'] + r['stdout']:
         # launchd restarts the bridge at once; retry once after it settles.
-        run(['xcrun', 'simctl', 'spawn', UDID, 'launchctl', 'stop', 'com.apple.CoreSimulator.bridge'], timeout=20)
+        run(['xcrun', 'simctl', 'spawn', UDID, 'launchctl', 'stop', 'com.apple.CoreSimulator.bridge'], timeout=20, step='bridge_restart')
         LOG.write('%s bridge restarted\n' % time.strftime('%H:%M:%S'))
         for _ in range(5):
-            time.sleep(2)
-            r = run(['axe', *args, '--udid', UDID], timeout=timeout)
+            time.sleep(remaining(2, 'bridge_settle'))
+            r = run(['axe', *args, '--udid', UDID], timeout=timeout, step='axe_' + args[0].replace('-', '_'))
             if not (r['exit_code'] and STALE_BRIDGE in r['stderr'] + r['stdout']):
                 break
     return r
@@ -77,10 +114,8 @@ def launch(body):
     """Relaunch the app; `env` reaches it through simctl's SIMCTL_CHILD_ prefix."""
     args = [str(a) for a in body.get('args', [])]
     env = {**os.environ, **{'SIMCTL_CHILD_' + k: str(v) for k, v in (body.get('env') or {}).items()}}
-    run(['xcrun', 'simctl', 'terminate', UDID, BUNDLE], timeout=20)
-    p = subprocess.run(['xcrun', 'simctl', 'launch', UDID, BUNDLE, *args], capture_output=True, text=True,
-                       timeout=60, env=env)
-    return {'exit_code': p.returncode, 'stdout': p.stdout, 'stderr': p.stderr}
+    run(['xcrun', 'simctl', 'terminate', UDID, BUNDLE], timeout=20, step='app_terminate')
+    return run(['xcrun', 'simctl', 'launch', UDID, BUNDLE, *args], timeout=60, env=env, step='app_launch')
 
 
 def action(path, body):
@@ -139,8 +174,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_any(self):
         global last_request
-        started = time.time()
+        started = time.monotonic()
         status = 500
+        acquired = False
+        request_owner.id = uuid.uuid4().hex
+        request_owner.started = started
+        request_owner.step = 'authenticate'
         try:
             if self.path == '/health':
                 status = 200
@@ -149,30 +188,69 @@ class Handler(BaseHTTPRequestHandler):
             if not hmac.compare_digest(auth, 'Bearer ' + TOKEN):
                 status = 401
                 return self.reply(401, {'error': 'unauthorized'})
+            # Old callers get a budget shorter than their existing HTTP timeout.
+            defaults = {'/ui': 30, '/tap': 30, '/swipe': 30, '/launch': 60, '/stop': 15,
+                        '/batch': 150, '/logs': 120}
+            try:
+                requested = float(self.headers.get('X-Simulator-Timeout-Seconds', defaults.get(self.path, 90)))
+            except ValueError:
+                requested = float('nan')
+            if not math.isfinite(requested) or not 0 < requested <= 150:
+                status = 400
+                return self.reply(400, {'state':'failed', 'step':'request_budget', 'error':'invalid_timeout'})
+            budget = min(max(0, requested - min(2, requested / 4)), max(0, DEADLINE - time.time()))
+            request_owner.deadline = started + budget
             last_request = time.time()
+            progress('request', 'running')
             n = int(self.headers.get('Content-Length') or 0)
-            body = json.loads(self.rfile.read(n) or b'{}') if n else {}
-            with lock:
-                if self.path == '/shot':
-                    status = 200
-                    return self.reply(200, shot(), 'image/jpeg')
-                if self.path == '/stop':
-                    status = 200
-                    self.reply(200, {'stopping': True})
-                    threading.Thread(target=server.shutdown, daemon=True).start()
-                    return
-                try:
-                    result = action(self.path, body)
-                except KeyError:
-                    status = 404
-                    return self.reply(404, {'error': 'unknown action ' + self.path})
+            request_owner.step = 'request_body'
+            self.connection.settimeout(remaining(5, 'request_body'))
+            try:
+                body = json.loads(self.rfile.read(n) or b'{}') if n else {}
+            except TimeoutError:
+                raise RequestTimeout('request_body') from None
+            # Stop is cancellation, not another simulator action waiting behind a stuck AXe call.
+            if self.path == '/stop':
+                progress('request', 'completed')
                 status = 200
-                self.reply(200, result)
-        except Exception as e:  # any failure answers, so the tunnel never shows a bare 502
+                self.reply(200, {'stopping': True})
+                threading.Thread(target=server.shutdown, daemon=True).start()
+                return
+            acquired = lock.acquire(timeout=remaining(150, 'waiting_for_simulator'))
+            if not acquired:
+                raise RequestTimeout('waiting_for_simulator')
+            try:
+                if self.path == '/shot':
+                    picture = shot()
+                    progress('request', 'completed')
+                    status = 200
+                    return self.reply(200, picture, 'image/jpeg')
+                result = action(self.path, body)
+            except KeyError:
+                status = 404
+                return self.reply(404, {'error': 'unknown action'})
+            status = 200
+            progress('request', 'failed' if isinstance(result, dict) and result.get('exit_code') else 'completed')
+            self.reply(200, result)
+        except (BrokenPipeError, ConnectionResetError):
+            status = 499
+            progress('response_delivery', 'cancelled')
+        except RequestTimeout as error:
+            status = 504
+            progress(error.step, 'timed_out', 124)
+            self.reply(status, {'state':'timed_out', 'step':error.step, 'error':'deadline',
+                                'request_id':request_owner.id,
+                                'elapsed_ms':round((time.monotonic()-started)*1000)})
+        except Exception as error:
             status = 502
-            self.reply(502, {'error': type(e).__name__ + ': ' + str(e)[:500]})
+            progress(getattr(request_owner, 'step', 'request'), 'failed')
+            self.reply(status, {'state':'failed', 'step':getattr(request_owner, 'step', 'request'),
+                                'error':type(error).__name__, 'request_id':request_owner.id})
         finally:
-            LOG.write('%s %s %s %dms\n' % (time.strftime('%H:%M:%S'), self.path, status, (time.time() - started) * 1000))
+            if acquired:
+                lock.release()
+            LOG.write('%s %s %s %dms\n' % (time.strftime('%H:%M:%S'), self.path, status, (time.monotonic() - started) * 1000))
+            request_owner.__dict__.clear()
 
     do_GET = do_POST = handle_any
 
