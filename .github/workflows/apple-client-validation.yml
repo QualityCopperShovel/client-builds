@@ -201,9 +201,21 @@ jobs:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: |
           set -euo pipefail
+          # Container presence and a booted device do not prove the XCTest runner has launched.
+          # Record these inputs without adding a new readiness gate or launching a second app.
+          capture_input() {
+            name=$1; shift
+            began=$SECONDS
+            printf 'phase=%s state=starting at=%s\n' "$name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a screenshots/app-startup.txt
+            if python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 15 "$@" > "screenshots/$name.txt" 2>&1; then status=0; else status=$?; fi
+            printf 'phase=%s state=terminal at=%s exit_code=%s elapsed_seconds=%s\n' "$name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" "$((SECONDS-began))" | tee -a screenshots/app-startup.txt
+          }
+          capture_input xctest-devices-before xcrun simctl list devices booted -j
+          capture_input xctest-app-before xcrun simctl get_app_container "$DEVICE" com.fairystack.ios app
+          capture_input xctest-runner-before xcrun simctl get_app_container "$DEVICE" com.excessivecode.ios.uitests.xctrunner app
           started=$SECONDS
-          printf 'phase=xctest state=starting\n' | tee -a screenshots/app-startup.txt
-          trap 'status=$?; printf "phase=xctest state=terminal exit_code=%s elapsed_seconds=%s\n" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
+          printf 'phase=xctest state=starting at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a screenshots/app-startup.txt
+          trap 'status=$?; printf "phase=xctest state=terminal at=%s exit_code=%s elapsed_seconds=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
           # XCTest owns launch and verifies rendered app behavior; no second simctl launch preflight.
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult test-without-building
       - name: Capture simulator startup failure
@@ -226,8 +238,11 @@ jobs:
           mkdir -p screenshots
           bounded 20 xcrun simctl io "$DEVICE" screenshot screenshots/last-simulator-state.png || true
           bounded 30 xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots || true
-          bounded 20 xcrun simctl list devices booted
-          bounded 20 xcrun simctl spawn "$DEVICE" log show --last 15m --style compact --predicate "process == \"$APP_SCHEME\" OR ((process == \"runningboardd\" OR process == \"amfid\" OR process == \"SpringBoard\" OR process == \"installd\" OR process == \"installcoordinationd\") AND eventMessage CONTAINS \"com.fairystack.ios\")" > screenshots/launch-events.txt || true
+          bounded 20 xcrun simctl list devices booted -j > screenshots/xctest-devices-after.json || true
+          bounded 15 xcrun simctl get_app_container "$DEVICE" com.excessivecode.ios.uitests.xctrunner app > screenshots/xctest-runner-after.txt 2>&1 || true
+          # The old app-only filter omitted this runner's distinct bundle and testmanagerd.
+          bounded 20 xcrun simctl spawn "$DEVICE" log show --last 15m --style compact --predicate "process == \"$APP_SCHEME\" OR process == \"ExcessiveCodeUITests-Runner\" OR process == \"testmanagerd\" OR ((process == \"runningboardd\" OR process == \"amfid\" OR process == \"SpringBoard\" OR process == \"installd\" OR process == \"installcoordinationd\") AND (eventMessage CONTAINS \"com.fairystack.ios\" OR eventMessage CONTAINS \"com.excessivecode.ios.uitests\"))" > screenshots/launch-events.txt || true
+          bounded 20 /usr/bin/log show --last 15m --style compact --predicate 'process == "testmanagerd" OR process == "xcodebuild" OR (subsystem BEGINSWITH "com.apple.CoreSimulator" AND (eventMessage CONTAINS "com.excessivecode.ios.uitests" OR eventMessage CONTAINS "com.fairystack.ios"))' 2>&1 | tail -1000 > screenshots/xctest-host-events.txt || true
       - name: Retain immutable validation evidence
         if: always()
         uses: actions/upload-artifact@v4
