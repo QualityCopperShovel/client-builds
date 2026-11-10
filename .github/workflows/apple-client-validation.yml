@@ -216,8 +216,9 @@ jobs:
           started=$SECONDS
           printf 'phase=xctest state=starting at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a screenshots/app-startup.txt
           trap 'status=$?; printf "phase=xctest state=terminal at=%s exit_code=%s elapsed_seconds=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
-          # XCTest owns launch and verifies rendered app behavior; no second simctl launch preflight.
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 600 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult test-without-building
+          # Measured runner startup can consume 475s before tests; allow the full suite within the existing job cap.
+          # Per-test 180s limits still terminate stuck tests; no second app launch or skipped checks.
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 900 xcodebuild -project "$APP_PROJECT" -scheme "$APP_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult test-without-building
       - name: Capture simulator startup failure
         if: failure()
         working-directory: native-client
