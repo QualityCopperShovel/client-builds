@@ -64,6 +64,21 @@ jobs:
           test "$(git rev-parse HEAD)" = "$COMMIT"
           git log -1 --format=%B | grep -qx 'Platform: ios'
           git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+      - name: Select Xcode and start gate clock
+        id: xcode
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          echo "EXCESSIVECODE_GATE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          echo "version=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Reuse compiled SDK modules
+        uses: actions/cache@v4
+        timeout-minutes: 2
+        with:
+          path: native-client/build/launch-check/ModuleCache.noindex
+          key: ios-launch-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}
       - name: Open app, launch burst, main-thread ping and watchdog
         working-directory: native-client
         timeout-minutes: 13
@@ -72,8 +87,6 @@ jobs:
           EXCESSIVECODE_LAUNCH_CASE: ${{ inputs.scenario || 'full' }}
         run: |
           set -euo pipefail
-          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
-          sudo xcode-select -s "$xcode"
           python3 launch_check.py
       - name: Retain launch check result
         if: always()
