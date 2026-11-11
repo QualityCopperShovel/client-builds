@@ -207,6 +207,14 @@ def action(path, body):
         return run(['xcrun', 'simctl', 'openurl', UDID, str(body['url'])], timeout=30)
     if path == '/appearance':
         return run(['xcrun', 'simctl', 'ui', UDID, 'appearance', 'dark' if body.get('dark') else 'light'], timeout=20)
+    if path == '/host-command':
+        # @lat: [[ios-runner#Hosted offline checks]]
+        # Bearer-scoped command access to this disposable CI host only. Arguments,
+        # output and environment never enter public workflow evidence.
+        argv = body.get('argv')
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+            raise ValueError('argv must be a nonempty list of strings')
+        return run(argv, timeout=max(1, min(float(body.get('timeout', 60)), 120)), step='host_command')
     if path == '/diagnostics':
         # @lat: [[ios-runner#Hosted offline checks]]
         # All processes are on this disposable CI runner; never inspect a paired device.
@@ -216,7 +224,7 @@ def action(path, body):
         crashes = []
         from pathlib import Path
         folder = Path.home() / 'Library/Logs/DiagnosticReports'
-        for path in sorted(folder.glob('*WebKit*'), key=lambda p: p.stat().st_mtime, reverse=True)[:5]:
+        for path in sorted([*folder.glob('*WebKit*'), *folder.glob('*SimMetalHost*')], key=lambda p: p.stat().st_mtime, reverse=True)[:5]:
             if path.is_file():
                 crashes.append({'name': path.name, 'text': path.read_text(errors='replace')[:150000]})
         return {'logs': logs, 'crashes': crashes}

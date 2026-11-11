@@ -199,3 +199,8 @@ watchdog restores it even if the relay dies. The request has a 150-second deadli
 The optional `runtime` input keeps iOS 18.6 by default; `latest` selects the newest
 installed iOS runtime. `/diagnostics` reads bounded GPU/app logs and the five most
 recent WebKit crash reports, returned only through the private relay.
+
+`/host-command` accepts an argv list and a maximum 120-second command timeout on
+the disposable hosted runner. It uses the same bearer token and request deadline.
+Only timing and terminal state enter public logs; arguments and output stay in the
+private response. It is not a connected-computer command path.
