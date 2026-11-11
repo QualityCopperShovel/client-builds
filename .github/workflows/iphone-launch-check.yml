@@ -12,6 +12,11 @@ on:
         required: false
         default: full
         type: string
+      verify_watchdog:
+        description: Inject a stall and verify next-launch replay
+        required: false
+        default: false
+        type: boolean
     secrets:
       FAIRYSTACK_SOURCE_KEY:
         required: true
@@ -29,6 +34,11 @@ on:
         default: full
         type: choice
         options: [full, send]
+      verify_watchdog:
+        description: Inject a stall and verify next-launch replay
+        required: false
+        default: true
+        type: boolean
 permissions:
   contents: read
 jobs:
@@ -58,6 +68,7 @@ jobs:
         working-directory: native-client
         timeout-minutes: 13
         env:
+          EXCESSIVECODE_VERIFY_WATCHDOG: ${{ inputs.verify_watchdog && '1' || '0' }}
           EXCESSIVECODE_LAUNCH_CASE: ${{ inputs.scenario || 'full' }}
         run: |
           set -euo pipefail
