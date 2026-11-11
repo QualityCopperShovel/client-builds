@@ -195,6 +195,8 @@ jobs:
           printf 'phase=install state=starting\n' | tee -a screenshots/app-startup.txt
           trap 'status=$?; printf "phase=install state=terminal exit_code=%s elapsed_seconds=%s\n" "$status" "$((SECONDS-started))" | tee -a screenshots/app-startup.txt' EXIT
           python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 90 xcrun simctl install "$DEVICE" "dd/Build/Products/Debug-iphonesimulator/$APP_SCHEME.app"
+          # Set the simulated permission before launch; its alert resumes the app and hides Retry.
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 30 xcrun simctl privacy "$DEVICE" grant location com.fairystack.ios
       - name: Test simulator interactions on that device
         working-directory: native-client
         env:
