@@ -118,7 +118,61 @@ def launch(body):
     return run(['xcrun', 'simctl', 'launch', UDID, BUNDLE, *args], timeout=60, env=env, step='app_launch')
 
 
+# @lat: [[ios-runner#Hosted offline checks]]
+OFFLINE_SHOTS = {}
+
+def network_cycle(body):
+    """Cut this disposable runner's network, cold-open, capture, restore.
+
+    A detached watchdog restores the interface even if the relay dies. Nothing
+    here runs on a connected personal device. Screenshots stay in private memory.
+    """
+    route = run(['/sbin/route', '-n', 'get', 'default'], timeout=10, step='default_interface')
+    interface = next((line.split(':', 1)[1].strip() for line in route['stdout'].splitlines()
+                      if line.strip().startswith('interface:')), '')
+    if not interface.startswith('en') or not interface[2:].isdigit():
+        raise ValueError('No ordinary hosted runner network interface')
+    OFFLINE_SHOTS.clear()
+    # subprocess timeout alone cannot undo an interface change after process death.
+    watchdog = subprocess.Popen([sys.executable, '-c',
+        'import subprocess,time,sys;time.sleep(100);subprocess.run(["sudo","-n","/sbin/ifconfig",sys.argv[1],"up"],timeout=10)',
+        interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    result = {'interface': interface}
+    began = time.monotonic()
+    try:
+        down = run(['sudo', '-n', '/sbin/ifconfig', interface, 'down'], timeout=10, step='network_down')
+        if down['exit_code']:
+            return down
+        result['network_down'] = True
+        time.sleep(remaining(3, 'offline_settle'))
+        result['offline_probe'] = run(['/usr/bin/curl', '-I', '--connect-timeout', '2', '--max-time', '4',
+                                      'https://simple-maps.jessald.excessivecode.com/'], timeout=6, step='offline_probe')
+        result['launch'] = launch({'env': body.get('env', {})})
+        time.sleep(remaining(12, 'offline_render'))
+        OFFLINE_SHOTS['reopen'] = shot()
+        result['ui_before_tap'] = axe('describe-ui', timeout=20)
+        if 'x' in body and 'y' in body:
+            result['tap'] = axe('tap', '-x', str(float(body['x'])), '-y', str(float(body['y'])), timeout=20)
+            time.sleep(remaining(1, 'tap_settle'))
+            OFFLINE_SHOTS['tap'] = shot()
+            result['ui_after_tap'] = axe('describe-ui', timeout=20)
+        result['offline_seconds'] = round(time.monotonic() - began, 1)
+    finally:
+        result['restore'] = run(['sudo', '-n', '/sbin/ifconfig', interface, 'up'], timeout=10, step='network_restore')
+        if not result['restore']['exit_code']:
+            watchdog.terminate()
+        time.sleep(remaining(5, 'network_restore_settle'))
+    return result
+
+
 def action(path, body):
+    if path == '/network-cycle':
+        return network_cycle(body)
+    if path == '/location':
+        granted = run(['xcrun', 'simctl', 'privacy', UDID, 'grant', 'location', BUNDLE], timeout=20)
+        if granted['exit_code']:
+            return granted
+        return run(['xcrun', 'simctl', 'location', UDID, 'set', str(body['latitude']) + ',' + str(body['longitude'])], timeout=20)
     if path == '/tap':
         if 'label' in body:
             return axe('tap', '--label', str(body['label']))
@@ -190,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(401, {'error': 'unauthorized'})
             # Old callers get a budget shorter than their existing HTTP timeout.
             defaults = {'/ui': 30, '/tap': 30, '/swipe': 30, '/launch': 60, '/stop': 15,
-                        '/batch': 150, '/logs': 120}
+                        '/batch': 150, '/logs': 120, '/network-cycle': 150}
             try:
                 requested = float(self.headers.get('X-Simulator-Timeout-Seconds', defaults.get(self.path, 90)))
             except ValueError:
@@ -220,6 +274,11 @@ class Handler(BaseHTTPRequestHandler):
             if not acquired:
                 raise RequestTimeout('waiting_for_simulator')
             try:
+                if self.path == '/saved-shot':
+                    picture = OFFLINE_SHOTS[str(body['name'])]
+                    progress('request', 'completed')
+                    status = 200
+                    return self.reply(200, picture, 'image/jpeg')
                 if self.path == '/shot':
                     picture = shot()
                     progress('request', 'completed')

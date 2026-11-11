@@ -22,6 +22,11 @@ on:
         required: false
         default: '30'
         type: string
+      app:
+        description: Optional hosted app config key (empty runs Excessive Code)
+        required: false
+        default: ''
+        type: string
       axe_version:
         description: AXe release (default 1.6.0, which taps and reads 3-4x faster than later builds)
         required: false
@@ -60,6 +65,7 @@ jobs:
           COMMIT: ${{ inputs.source_commit }}
           REVISION: ${{ inputs.source_revision }}
           MINUTES: ${{ inputs.minutes }}
+          APP: ${{ inputs.app }}
         run: |
           set -euo pipefail
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ && "$MINUTES" =~ ^[0-9]+$ ]]
@@ -70,6 +76,12 @@ jobs:
           # Key the built app on the snapshot tree minus test sources (UI tests embed web files), so
           # revisions with unchanged app files share one build.
           echo "tree=$(git ls-tree HEAD | awk -F'\t' '$2 != "UITests" && $2 != "Tests"' | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+          [[ -z "$APP" || "$APP" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]]
+          bundle=com.fairystack.ios
+          if [ -n "$APP" ]; then
+            bundle=$(python3 -c 'import json,sys; print(json.load(open("app-configs/"+sys.argv[1]+".json"))["bundle_id"])' "$APP")
+          fi
+          echo "APP_BUNDLE=$bundle" >> "$GITHUB_ENV"
           rm -rf .git
       # Boot in the background: the cold first boot overlaps tool setup, cache restore and the tunnel.
       - name: Start booting an iPhone 16 simulator
@@ -122,7 +134,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: native-client/dd/Build/Products/Debug-iphonesimulator
-          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}-app-${{ inputs.app }}
       - name: Build the app for the simulator
         if: steps.app-cache.outputs.cache-hit != 'true'
         working-directory: native-client
@@ -131,16 +143,21 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild -version
-          python3 generate_project.py
+          if [ -n '${{ inputs.app }}' ]; then
+            python3 generate_hosted_app.py --config 'app-configs/${{ inputs.app }}.json' --output hosted-project
+            cd hosted-project
+          else
+            python3 generate_project.py
+          fi
           projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ]
           scheme="${projects[0]%.xcodeproj}"
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 900 xcodebuild -project "${projects[0]}" -scheme "$scheme" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath dd ONLY_ACTIVE_ARCH=YES ARCHS="$(uname -m)" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build > "$RUNNER_TEMP/build.log" 2>&1 || { tail -40 "$RUNNER_TEMP/build.log" | grep -E 'error|warning: fatal' ; exit 1; }
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 900 xcodebuild -project "${projects[0]}" -scheme "$scheme" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath "$GITHUB_WORKSPACE/native-client/dd" ONLY_ACTIVE_ARCH=YES ARCHS="$(uname -m)" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build > "$RUNNER_TEMP/build.log" 2>&1 || { tail -40 "$RUNNER_TEMP/build.log" | grep -E 'error|warning: fatal' ; exit 1; }
       - name: Save the built app
         if: steps.app-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: native-client/dd/Build/Products/Debug-iphonesimulator
-          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}-app-${{ inputs.app }}
       - name: Install and open the app
         working-directory: native-client
         env:
@@ -166,9 +183,9 @@ jobs:
             install_status=$?; failure_evidence install; exit "$install_status"
           }
           # Keep optional permission errors visible, but never continue after a stalled simctl.
-          stage microphone_permission 20 xcrun simctl privacy "$DEVICE" grant microphone com.fairystack.ios || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
-          stage location_permission 20 xcrun simctl privacy "$DEVICE" revoke location com.fairystack.ios || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
-          stage launch 60 xcrun simctl launch "$DEVICE" com.fairystack.ios --excessivecode-reset || {
+          stage microphone_permission 20 xcrun simctl privacy "$DEVICE" grant microphone "$APP_BUNDLE" || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
+          stage location_permission 20 xcrun simctl privacy "$DEVICE" revoke location "$APP_BUNDLE" || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
+          stage launch 60 xcrun simctl launch "$DEVICE" "$APP_BUNDLE" --excessivecode-reset || {
             launch_status=$?; failure_evidence launch; exit "$launch_status"
           }
       - name: Encrypt the handoff

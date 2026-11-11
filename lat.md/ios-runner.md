@@ -182,3 +182,16 @@ relay replies fail immediately. Exhausted deadlines make no calls. The existing
 timeout helper owns the terminal handoff state; per-attempt HTTP/exit codes and
 elapsed time join `startup.jsonl` in the existing artifact. No job, runtime, build
 or session bound is increased. This repair does not dispatch a hosted run.
+
+## Hosted offline checks
+
+The interactive simulator workflow accepts an optional `app` config key. It builds
+that hosted app with its real bundle, scheme and persistent WebKit store. An empty
+key preserves the main client. Build caches include the app key.
+
+The private relay's `/location` grants that bundle location access and sets a fix.
+`/network-cycle` lowers the disposable runner's default en interface, confirms an
+HTTPS request fails, terminates/relaunches the app, and saves reopen/tap pictures
+and accessibility trees before restoring the interface. A separate 100-second
+watchdog restores it even if the relay dies. The request has a 150-second deadline.
+`/saved-shot` returns either private in-memory picture; none enters public artifacts.
