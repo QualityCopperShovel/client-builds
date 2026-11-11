@@ -8,6 +8,12 @@ on:
       source_revision:
         required: true
         type: string
+      scenario:
+        description: Full launch plus Send, or isolated Send regression
+        required: false
+        default: full
+        type: choice
+        options: [full, send]
 permissions:
   contents: read
 jobs:
@@ -36,6 +42,8 @@ jobs:
       - name: Open app, launch burst, main-thread ping and watchdog
         working-directory: native-client
         timeout-minutes: 5
+        env:
+          EXCESSIVECODE_LAUNCH_CASE: ${{ inputs.scenario || 'full' }}
         run: |
           set -euo pipefail
           xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
