@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: fairystack-ios-testflight
@@ -30,12 +31,12 @@ jobs:
       source_commit: ${{ inputs.source_commit }}
       source_revision: ${{ inputs.source_revision }}
     secrets: inherit
+  # Archive runs beside the launch check; only the upload waits for its verdict.
   upload:
-    needs: launch
     # @lat: [[ios-runner]]
     # The arm64 pool failed to assign a runner in run 41511969406.
     runs-on: macos-15-intel
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       BUILD_NUMBER: ${{ inputs.build_number }}
     steps:
@@ -105,16 +106,12 @@ jobs:
             done
             rm -f "$profile"
           done
-      - name: Archive, export and upload to TestFlight
+      - name: Archive and export
         working-directory: native-client
         env:
-          ASC_KEY_ID: ${{ secrets.FAIRYSTACK_IOS_ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.FAIRYSTACK_IOS_ASC_ISSUER_ID }}
-          ASC_PRIVATE_KEY: ${{ secrets.FAIRYSTACK_IOS_ASC_PRIVATE_KEY }}
           FASTLANE_SKIP_UPDATE_CHECK: '1'
           FASTLANE_OPT_OUT_USAGE: '1'
           FASTLANE_HIDE_CHANGELOG: '1'
-          SPACESHIP_TIMEOUT: '30'
           FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: '60'
         run: |
           set -euo pipefail
@@ -125,7 +122,40 @@ jobs:
           echo "$version"
           major="$(sed -nE '1s/Xcode ([0-9]+).*/\1/p' <<<"$version")"
           [ "$major" -ge 26 ] || { echo "Xcode 26 or later is required; newest is $xcode"; exit 1; }
-          bundle exec fastlane ios beta
+          bundle exec fastlane ios build
+      - name: Wait for launch check verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 120); do
+            row="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --jq '.jobs[] | select(.name == "launch / verdict") | "\(.status) \(.conclusion)"')"
+            echo "launch verdict: ${row:-not started}"
+            case "$row" in
+              "completed success") exit 0 ;;
+              completed*) echo 'Launch check failed; not uploading'; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo 'Launch check verdict timed out'; exit 1
+      - name: Upload to TestFlight
+        working-directory: native-client
+        env:
+          ASC_KEY_ID: ${{ secrets.FAIRYSTACK_IOS_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.FAIRYSTACK_IOS_ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.FAIRYSTACK_IOS_ASC_PRIVATE_KEY }}
+          FASTLANE_SKIP_UPDATE_CHECK: '1'
+          FASTLANE_OPT_OUT_USAGE: '1'
+          FASTLANE_HIDE_CHANGELOG: '1'
+          SPACESHIP_TIMEOUT: '30'
+        run: |
+          set -euo pipefail
+          ipas=(build/*.ipa); [ "${#ipas[@]}" -eq 1 ] && [ -f "${ipas[0]}" ]
+          export KEY="$RUNNER_TEMP/asc-key.json"; key="$KEY"
+          python3 -c 'import json,os; json.dump({"key_id":os.environ["ASC_KEY_ID"],"issuer_id":os.environ["ASC_ISSUER_ID"],"key":os.environ["ASC_PRIVATE_KEY"],"in_house":False},open(os.environ["KEY"],"w"))'
+          bundle exec fastlane pilot upload --api_key_path "$key" --ipa "${ipas[0]}" \
+            --app_identifier com.fairystack.ios --skip_waiting_for_build_processing true --distribute_external false
+          rm -f "$key"
       - name: Write build receipt
         working-directory: native-client
         env:
@@ -160,4 +190,5 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/fairystack-ios.keychain-db" || true
+          rm -f "$RUNNER_TEMP/asc-key.json"
           rm -f "$HOME"/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision "$HOME"/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
