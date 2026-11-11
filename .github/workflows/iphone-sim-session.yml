@@ -27,6 +27,11 @@ on:
         required: false
         default: ''
         type: string
+      xcode:
+        description: Optional Xcode version (empty selects newest installed)
+        required: false
+        default: ''
+        type: string
       runtime:
         description: iOS runtime (latest selects the newest installed runtime)
         required: false
@@ -94,7 +99,14 @@ jobs:
         run: |
           set -euo pipefail
           bounded() { python3 workflow/scripts/run_with_timeout.py "$@"; }
-          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          requested_xcode='${{ inputs.xcode }}'
+          if [ -n "$requested_xcode" ]; then
+            [[ "$requested_xcode" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
+            xcode="/Applications/Xcode_$requested_xcode.app"
+            test -d "$xcode"
+          else
+            xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          fi
           sudo xcode-select -s "$xcode"
           runtime='${{ inputs.runtime }}'
           if [ "$runtime" = latest ]; then
@@ -144,7 +156,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: native-client/dd/Build/Products/Debug-iphonesimulator
-          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}-app-${{ inputs.app }}
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}-app-${{ inputs.app }}-xcode-${{ inputs.xcode }}-runtime-${{ inputs.runtime }}
       - name: Build the app for the simulator
         if: steps.app-cache.outputs.cache-hit != 'true'
         working-directory: native-client
@@ -167,7 +179,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: native-client/dd/Build/Products/Debug-iphonesimulator
-          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}-app-${{ inputs.app }}
+          key: iphone-sim-app-${{ inputs.runner || 'macos-15' }}-tree-${{ steps.source.outputs.tree }}-app-${{ inputs.app }}-xcode-${{ inputs.xcode }}-runtime-${{ inputs.runtime }}
       - name: Install and open the app
         working-directory: native-client
         env:

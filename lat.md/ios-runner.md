@@ -208,3 +208,7 @@ private response. It is not a connected-computer command path.
 A hosted app's initial launch failure retains its failure metadata and hands off
 the installed simulator for private diagnosis. It does not establish app health.
 The main client's existing launch requirement is unchanged.
+
+The `xcode` input can select an installed toolchain before CoreSimulator starts.
+Caches include toolchain/runtime. This allows a matching Xcode/iOS pair when a
+new host Metal driver crashes an older simulator; empty still selects newest.
