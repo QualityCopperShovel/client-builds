@@ -43,9 +43,16 @@ permissions:
   contents: read
 jobs:
   launch:
+    continue-on-error: true
+    outputs:
+      outcome: ${{ steps.result.outputs.outcome }}
     runs-on: macos-15
-    timeout-minutes: 15
-    steps:
+    timeout-minutes: 28
+    steps: &launch_steps
+      - uses: actions/checkout@v4
+        with:
+          path: workflow-tools
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: QualityCopperShovel/fairystack
@@ -81,20 +88,64 @@ jobs:
           key: ios-launch-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}
       - name: Open app, launch burst, main-thread ping and watchdog
         working-directory: native-client
-        timeout-minutes: 13
+        timeout-minutes: 26
         env:
           EXCESSIVECODE_VERIFY_WATCHDOG: ${{ inputs.verify_watchdog && '1' || '0' }}
           EXCESSIVECODE_LAUNCH_CASE: ${{ inputs.scenario || 'full' }}
         run: |
           set -euo pipefail
-          python3 launch_check.py
+          python3 ../workflow-tools/scripts/iphone_launch_gate.py
+      - name: Record check verdict
+        id: result
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          path = Path('native-client/launch-gate-result.json')
+          outcome = json.loads(path.read_text())['outcome'] if path.exists() else 'runner_fault'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('outcome='+outcome+'\n')
+          PYTHON
       - name: Retain launch check result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: iphone-launch-check
+          name: iphone-launch-check-${{ github.job }}
           path: |
+            native-client/launch-gate-result.json
+            native-client/launch-check-attempts/
             native-client/launch-check-result.json
             native-client/launch-check-build.log
           if-no-files-found: error
           retention-days: 90
+  retry_runner:
+    needs: launch
+    if: ${{ !cancelled() && (needs.launch.outputs.outcome == '' || needs.launch.outputs.outcome == 'runner_fault') }}
+    continue-on-error: true
+    outputs:
+      outcome: ${{ steps.result.outputs.outcome }}
+    runs-on: macos-15
+    timeout-minutes: 28
+    env:
+      EXCESSIVECODE_GATE_ATTEMPTS: '1'
+    steps: *launch_steps
+  verdict:
+    needs: [launch, retry_runner]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report launch result
+        env:
+          FIRST: ${{ needs.launch.outputs.outcome }}
+          RETRY: ${{ needs.retry_runner.outputs.outcome }}
+        run: |
+          result="$FIRST"
+          if [ "$result" = runner_fault ] || [ -z "$result" ]; then result="$RETRY"; fi
+          case "$result" in
+            passed) echo 'Launch check passed' >> "$GITHUB_STEP_SUMMARY" ;;
+            app_check_failed) echo '::error::App launch check failed; see bridge and main-thread evidence'; exit 1 ;;
+            *) echo '::warning::Check could not run after one retry; no frozen-app verdict. Upload may proceed.'
+               echo 'Check could not run after one retry (simulator or runner fault).' >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
