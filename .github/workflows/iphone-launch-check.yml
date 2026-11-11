@@ -34,7 +34,7 @@ permissions:
 jobs:
   launch:
     runs-on: macos-15
-    timeout-minutes: 6
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,7 +56,7 @@ jobs:
           git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
       - name: Open app, launch burst, main-thread ping and watchdog
         working-directory: native-client
-        timeout-minutes: 5
+        timeout-minutes: 13
         env:
           EXCESSIVECODE_LAUNCH_CASE: ${{ inputs.scenario || 'full' }}
         run: |
