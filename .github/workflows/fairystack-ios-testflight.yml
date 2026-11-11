@@ -75,7 +75,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iphone-launch-check
-          path: native-client/launch-check-result.json
+          path: |
+            native-client/launch-check-result.json
+            native-client/launch-check-build.log
           if-no-files-found: error
           retention-days: 90
       - uses: ruby/setup-ruby@v1
