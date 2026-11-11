@@ -196,7 +196,10 @@ jobs:
           stage microphone_permission 20 xcrun simctl privacy "$DEVICE" grant microphone "$APP_BUNDLE" || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
           stage location_permission 20 xcrun simctl privacy "$DEVICE" revoke location "$APP_BUNDLE" || { stage_status=$?; [ "$stage_status" -ne 124 ] || exit "$stage_status"; }
           stage launch 60 xcrun simctl launch "$DEVICE" "$APP_BUNDLE" --excessivecode-reset || {
-            launch_status=$?; failure_evidence launch; exit "$launch_status"
+            launch_status=$?; failure_evidence launch
+            if [ -z '${{ inputs.app }}' ]; then exit "$launch_status"; fi
+            echo "Hosted app launch failed ($launch_status); handing off the installed simulator for private diagnosis."
+
           }
       - name: Encrypt the handoff
         env:

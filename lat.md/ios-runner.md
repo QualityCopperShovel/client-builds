@@ -204,3 +204,7 @@ recent WebKit crash reports, returned only through the private relay.
 the disposable hosted runner. It uses the same bearer token and request deadline.
 Only timing and terminal state enter public logs; arguments and output stay in the
 private response. It is not a connected-computer command path.
+
+A hosted app's initial launch failure retains its failure metadata and hands off
+the installed simulator for private diagnosis. It does not establish app health.
+The main client's existing launch requirement is unchanged.
