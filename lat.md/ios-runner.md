@@ -195,3 +195,7 @@ HTTPS request fails, terminates/relaunches the app, and saves reopen/tap picture
 and accessibility trees before restoring the interface. A separate 100-second
 watchdog restores it even if the relay dies. The request has a 150-second deadline.
 `/saved-shot` returns either private in-memory picture; none enters public artifacts.
+
+The optional `runtime` input keeps iOS 18.6 by default; `latest` selects the newest
+installed iOS runtime. `/diagnostics` reads bounded GPU/app logs and the five most
+recent WebKit crash reports, returned only through the private relay.

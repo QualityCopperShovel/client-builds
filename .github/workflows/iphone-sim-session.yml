@@ -27,6 +27,11 @@ on:
         required: false
         default: ''
         type: string
+      runtime:
+        description: iOS runtime (latest selects the newest installed runtime)
+        required: false
+        default: 'com.apple.CoreSimulator.SimRuntime.iOS-18-6'
+        type: string
       axe_version:
         description: AXe release (default 1.6.0, which taps and reads 3-4x faster than later builds)
         required: false
@@ -91,7 +96,12 @@ jobs:
           bounded() { python3 workflow/scripts/run_with_timeout.py "$@"; }
           xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
           sudo xcode-select -s "$xcode"
-          runtime=com.apple.CoreSimulator.SimRuntime.iOS-18-6
+          runtime='${{ inputs.runtime }}'
+          if [ "$runtime" = latest ]; then
+            runtime=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[r for r in json.load(sys.stdin)["runtimes"] if r.get("isAvailable") and r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")]; print(max(r,key=lambda r:tuple(map(int,r["version"].split("."))))["identifier"])')
+          fi
+          [[ "$runtime" =~ ^com.apple.CoreSimulator.SimRuntime.iOS-[0-9]+-[0-9]+(-[0-9]+)?$ ]]
+          echo "Runtime: $runtime"
           # The first simctl call starts CoreSimulator, which took over 60 s on a fresh runner.
           device=$(bounded 180 xcrun simctl create "Session-$GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")
           echo "device=$device" >> "$GITHUB_OUTPUT"
@@ -151,7 +161,7 @@ jobs:
           fi
           projects=(*.xcodeproj); [ "${#projects[@]}" -eq 1 ]
           scheme="${projects[0]%.xcodeproj}"
-          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 900 xcodebuild -project "${projects[0]}" -scheme "$scheme" -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath "$GITHUB_WORKSPACE/native-client/dd" ONLY_ACTIVE_ARCH=YES ARCHS="$(uname -m)" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build > "$RUNNER_TEMP/build.log" 2>&1 || { tail -40 "$RUNNER_TEMP/build.log" | grep -E 'error|warning: fatal' ; exit 1; }
+          python3 "$GITHUB_WORKSPACE/workflow/scripts/run_with_timeout.py" 900 xcodebuild -project "${projects[0]}" -scheme "$scheme" -configuration Debug -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath "$GITHUB_WORKSPACE/native-client/dd" ONLY_ACTIVE_ARCH=YES ARCHS="$(uname -m)" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build > "$RUNNER_TEMP/build.log" 2>&1 || { tail -40 "$RUNNER_TEMP/build.log" | grep -E 'error|warning: fatal' ; exit 1; }
       - name: Save the built app
         if: steps.app-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
