@@ -24,7 +24,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  launch:
+    uses: ./.github/workflows/iphone-launch-check.yml
+    with:
+      source_commit: ${{ inputs.source_commit }}
+      source_revision: ${{ inputs.source_revision }}
+    secrets: inherit
   upload:
+    needs: launch
     # @lat: [[ios-runner]]
     # The arm64 pool failed to assign a runner in run 41511969406.
     runs-on: macos-15-intel
@@ -62,24 +69,6 @@ jobs:
         run: |
           [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]
           python3 generate_project.py
-      - name: Open iPhone build and test launch burst before upload
-        working-directory: native-client
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
-          sudo xcode-select -s "$xcode"
-          python3 launch_check.py
-      - name: Retain launch check result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: iphone-launch-check
-          path: |
-            native-client/launch-check-result.json
-            native-client/launch-check-build.log
-          if-no-files-found: error
-          retention-days: 90
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'

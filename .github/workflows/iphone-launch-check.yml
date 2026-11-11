@@ -1,5 +1,20 @@
 name: iPhone launch burst
 on:
+  workflow_call:
+    inputs:
+      source_commit:
+        required: true
+        type: string
+      source_revision:
+        required: true
+        type: string
+      scenario:
+        required: false
+        default: full
+        type: string
+    secrets:
+      FAIRYSTACK_SOURCE_KEY:
+        required: true
   workflow_dispatch:
     inputs:
       source_commit:
@@ -18,7 +33,7 @@ permissions:
   contents: read
 jobs:
   launch:
-    runs-on: macos-15-intel
+    runs-on: macos-15
     timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
