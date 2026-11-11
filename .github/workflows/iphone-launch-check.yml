@@ -1,0 +1,51 @@
+name: iPhone launch burst
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        required: true
+        type: string
+      source_revision:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  launch:
+    runs-on: macos-15-intel
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: QualityCopperShovel/fairystack
+          ref: ${{ inputs.source_commit }}
+          ssh-key: ${{ secrets.FAIRYSTACK_SOURCE_KEY }}
+          persist-credentials: false
+          path: native-client
+      - name: Verify source snapshot
+        working-directory: native-client
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+          REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          git log -1 --format=%B | grep -qx 'Platform: ios'
+          git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+      - name: Open app, launch burst, main-thread ping and watchdog
+        working-directory: native-client
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          python3 launch_check.py
+      - name: Retain launch check result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iphone-launch-check
+          path: native-client/launch-check-result.json
+          if-no-files-found: error
+          retention-days: 90

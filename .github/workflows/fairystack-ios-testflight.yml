@@ -52,6 +52,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$COMMIT"
           git log -1 --format=%B | grep -qx "Platform: ios"
           git log -1 --format=%B | grep -qx "FairyStack-Revision: $REVISION"
+          if git log -1 --format=%B | grep -qx 'Launch-Check-Only: true'; then
+            echo 'Diagnostic frozen-recorder snapshot cannot be uploaded'; exit 1
+          fi
           rm -rf .git
           printf 'revision=%s\nsnapshot=%s\n' "$REVISION" "$COMMIT" > "$GITHUB_WORKSPACE/source-receipt.txt"
       - name: Generate Xcode project
@@ -59,6 +62,22 @@ jobs:
         run: |
           [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]
           python3 generate_project.py
+      - name: Open iPhone build and test launch burst before upload
+        working-directory: native-client
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_[0-9]*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          python3 launch_check.py
+      - name: Retain launch check result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iphone-launch-check
+          path: native-client/launch-check-result.json
+          if-no-files-found: error
+          retention-days: 90
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
