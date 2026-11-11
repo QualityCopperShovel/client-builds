@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One bounded, content-free snapshot after a failed simulator install."""
+"""One bounded, content-free snapshot after a failed simulator startup stage."""
 # @lat: [[ios-runner#Installer failure evidence]]
 import argparse
 import json
@@ -15,12 +15,13 @@ from pathlib import Path
 MAX_BYTES = 262144
 PROCESSES = {'xcrun', 'simctl', 'installd', 'installcoordinationd', 'CoreSimulatorService',
              'com.apple.CoreSimulator.CoreSimulatorService', 'simulatord', 'SimulatorTrampoline',
-             'launchd_sim', 'Simulator'}
+             'launchd_sim', 'Simulator', 'ExcessiveCode', 'runningboardd', 'SpringBoard', 'backboardd'}
 DOMAINS = ('MIInstallerErrorDomain', 'IXErrorDomain', 'NSPOSIXErrorDomain', 'NSCocoaErrorDomain',
            'FBSOpenApplicationServiceErrorDomain', 'SimError', 'LSApplicationWorkspaceErrorDomain')
 FLAGS = {'timeout': r'timed? out|timeout', 'disk_full': r'no space|ENOSPC',
          'permission': r'permission|EPERM|EACCES', 'signing': r'codesign|code signing|signature',
-         'unresponsive': r'deadlock|unresponsive|hung', 'install_failed': r'failed to install|installation failed'}
+         'unresponsive': r'deadlock|unresponsive|hung', 'install_failed': r'failed to install|installation failed',
+         'launch_failed': r'failed to launch|failed to open|launch failed'}
 
 
 def collect(command, end, cap):
@@ -146,6 +147,7 @@ def resources(raw):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--stage', choices=('install', 'launch'), default='install')
     parser.add_argument('--device', required=True)
     parser.add_argument('--startup-deadline', required=True, type=float)
     parser.add_argument('--session-deadline', required=True, type=float)
@@ -157,12 +159,12 @@ def main():
     began = time.monotonic()
     # Reserve cleanup/file-write margin inside both original deadlines, never renew them.
     end = min(began+15, args.startup_deadline, began+max(0, args.session_deadline-time.time()))-.25
-    report = {'schema': 1, 'state': 'running', 'budget_seconds': round(max(0,end-began),3),
+    report = {'schema': 1, 'stage':args.stage, 'state': 'running', 'budget_seconds': round(max(0,end-began),3),
               'limits': {'bytes_per_command': MAX_BYTES, 'service_events_per_command': 100, 'process_rows': 32}, 'steps': {}}
 
     def trace(state):
         with open(args.startup_log, 'a', encoding='utf-8') as handle:
-            handle.write(json.dumps({'step':'install_evidence', 'state':state,
+            handle.write(json.dumps({'step':args.stage+'_evidence', 'state':state,
                                      'elapsed_ms':round((time.monotonic()-began)*1000), 'at':time.time()})+'\n')
 
     trace('running')
@@ -170,8 +172,9 @@ def main():
         ('processes', ['/bin/ps','-axo','pid=,ppid=,state=,pcpu=,rss=,comm='], 2, process_state),
         ('memory', ['/usr/bin/vm_stat'], 1, resources),
         ('disk', ['/bin/df','-Pk','/'], 1, lambda raw: disk_state(raw)),
-        ('installer', ['xcrun','simctl','spawn',args.device,'log','show','--last','3m','--style','json','--predicate',
-                       '(process == "installd" OR process == "installcoordinationd") AND (messageType == 16 OR messageType == 17)'], 6, service_errors),
+        (args.stage, ['xcrun','simctl','spawn',args.device,'log','show','--last','3m','--style','json','--predicate',
+            ('(process == "ExcessiveCode" OR process == "runningboardd" OR process == "SpringBoard" OR process == "backboardd")' if args.stage == 'launch'
+             else '(process == "installd" OR process == "installcoordinationd")') + ' AND (messageType == 16 OR messageType == 17)'], 6, service_errors),
         ('core_simulator', ['/usr/bin/log','show','--last','3m','--style','json','--predicate',
                             '(subsystem BEGINSWITH "com.apple.CoreSimulator" OR process == "CoreSimulatorService" OR process == "com.apple.CoreSimulator.CoreSimulatorService" OR process == "simulatord" OR process == "SimulatorTrampoline") AND (messageType == 16 OR messageType == 17)'], 5, service_errors)]
     try:
