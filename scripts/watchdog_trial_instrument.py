@@ -110,3 +110,54 @@ new = "            command.update(ended_at=time.time(), state='timed_out', secon
 assert text.count(old) == 1
 text = text.replace(old, new)
 path.write_text(text)
+
+text = path.read_text()
+old = "    command_lock = threading.Lock()\n"
+new = old + '''    setup_probe_stop = threading.Event()
+    setup_probe_records = []
+    setup_probe_thread = None
+    def setup_probe():
+        sampled = False
+        while not setup_probe_stop.is_set():
+            with command_lock:
+                running = [{'argv': list(c['argv'][:4]), 'started_at': c.get('started_at')} for c in evidence['commands'] if c.get('state') == 'running']
+            row = {'at': time.time(), 'step': evidence.get('step'), 'running': running}
+            try:
+                ps = subprocess.run(['ps', '-axo', 'pid,ppid,pcpu,pmem,state,wchan,comm'], capture_output=True, text=True, timeout=4)
+                row['ps_returncode'] = ps.returncode
+                row['processes'] = [line for line in ps.stdout.splitlines() if any(x in line for x in ('CoreSimulator', 'simctl', 'SimulatorTrampoline', 'launchd_sim', 'SpringBoard'))][:80]
+                row['ps_stderr'] = ps.stderr[-500:]
+                up = subprocess.run(['uptime'], capture_output=True, text=True, timeout=3)
+                row['host_load'] = up.stdout.strip()
+                vm = subprocess.run(['vm_stat'], capture_output=True, text=True, timeout=3)
+                row['vm_stat'] = vm.stdout[-2500:]
+                delayed = any('get_app_container' in c['argv'] and c.get('started_at') and time.time()-c['started_at'] >= 12 for c in running)
+                service = [line for line in row['processes'] if '/com.apple.CoreSimulator.CoreSimulatorService.xpc/Contents/MacOS/' in line]
+                if delayed and service and not sampled:
+                    pid = int(service[0].split()[0])
+                    target = ROOT / ('setup-service-stack-' + str(int(time.time())) + '.txt')
+                    result = subprocess.run(['sample', str(pid), '2', '-file', str(target)], capture_output=True, text=True, timeout=8)
+                    row['service_stack'] = {'returncode': result.returncode, 'stderr': result.stderr[-1000:]}
+                    if target.exists():
+                        row['service_stack']['sample'] = target.read_text(errors='replace')[:120000]
+                    sampled = True
+            except Exception as error:
+                row['probe_error'] = type(error).__name__ + ': ' + str(error)[:300]
+            setup_probe_records.append(row)
+            setup_probe_stop.wait(5)
+'''
+assert text.count(old) == 1
+text = text.replace(old,new)
+old = "        evidence['step'] = 'simulator boot'\n"
+new = old + "        setup_probe_thread = threading.Thread(target=setup_probe, daemon=True)\n        setup_probe_thread.start()\n"
+assert text.count(old) == 1
+text = text.replace(old,new)
+old = "            location.result()\n        server = ThreadingHTTPServer"
+new = "            location.result()\n        setup_probe_stop.set()\n        if setup_probe_thread:\n            setup_probe_thread.join(timeout=9)\n        server = ThreadingHTTPServer"
+assert text.count(old) == 1
+text = text.replace(old,new)
+old = "    finally:\n        probe_stop.set()"
+new = "    finally:\n        setup_probe_stop.set()\n        if setup_probe_thread:\n            setup_probe_thread.join(timeout=9)\n        evidence['setup_host_probe'] = setup_probe_records\n        probe_stop.set()"
+assert text.count(old) == 1
+text = text.replace(old,new)
+path.write_text(text)
