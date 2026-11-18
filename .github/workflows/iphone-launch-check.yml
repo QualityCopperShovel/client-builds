@@ -59,8 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           export EXCESSIVECODE_GATE_STARTED_AT=$(date +%s)
-          python3 ../workflow-tools/scripts/iphone_launch_gate.py
-          python3 -c "import json; assert json.load(open('launch-gate-result.json'))['outcome']=='passed'"
+          python3 ../workflow-tools/scripts/iphone_launch_gate.py || true
           mkdir -p "$RUNNER_TEMP/evidence/cold"
           cp launch-gate-result.json launch-check-result.json "$RUNNER_TEMP/evidence/cold/"
       - name: Measure save and remove checkout
@@ -97,10 +96,12 @@ jobs:
         run: |
           set -euo pipefail
           export EXCESSIVECODE_GATE_STARTED_AT=$(date +%s)
-          python3 ../workflow-tools/scripts/iphone_launch_gate.py
-          python3 -c "import json; assert json.load(open('launch-gate-result.json'))['outcome']=='passed'"
+          python3 ../workflow-tools/scripts/iphone_launch_gate.py || true
           mkdir -p "$RUNNER_TEMP/evidence/restored"
           cp launch-gate-result.json launch-check-result.json "$RUNNER_TEMP/evidence/restored/"
+      - name: Report both gate verdicts
+        run: |
+          python3 -c "import json, os, pathlib; p=pathlib.Path(os.environ['RUNNER_TEMP'])/'evidence'; a=[json.loads((p/n/'launch-gate-result.json').read_text())['outcome'] for n in ('cold','restored')]; print('Gate outcomes:', *a); assert a == ['passed', 'passed']"
       - name: Retain results
         if: always()
         uses: actions/upload-artifact@v4
