@@ -96,6 +96,7 @@ jobs:
           EXCESSIVECODE_LAUNCH_CASE: ${{ inputs.scenario || 'full' }}
         run: |
           set -euo pipefail
+          python3 ../workflow-tools/scripts/launch_trial_capture.py
           python3 ../workflow-tools/scripts/iphone_launch_gate.py
       - name: Record check verdict
         id: result
@@ -139,6 +140,8 @@ jobs:
           name: iphone-launch-check-${{ github.job }}
           path: |
             native-client/launch-diagnostics.txt
+            native-client/launch-trial-events.json
+            native-client/launch-trial-diagnostics.json
             native-client/launch-gate-result.json
             native-client/launch-check-attempts/
             native-client/launch-check-result.json
