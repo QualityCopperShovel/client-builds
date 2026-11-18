@@ -96,6 +96,19 @@ jobs:
           EXCESSIVECODE_LAUNCH_CASE: ${{ inputs.scenario || 'full' }}
         run: |
           set -euo pipefail
+          # No-upload experiment: test whether concurrent simctl setup stalls.
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          path = Path('launch_check.py')
+          source = path.read_text()
+          start = source.index('        # These calls only depend on installation')
+          end = source.index('        server = ThreadingHTTPServer', start)
+          replacement = """        container = Path(run('xcrun', 'simctl', 'get_app_container', sim, 'com.fairystack.ios', 'data'))
+          run('xcrun', 'simctl', 'privacy', sim, 'grant', 'microphone', 'com.fairystack.ios')
+          run('xcrun', 'simctl', 'privacy', sim, 'grant', 'location', 'com.fairystack.ios')
+          """
+          path.write_text(source[:start] + replacement + source[end:])
+          PYTHON
           python3 ../workflow-tools/scripts/iphone_launch_gate.py
       - name: Record check verdict
         id: result
