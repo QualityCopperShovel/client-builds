@@ -22,6 +22,12 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+      runner_label:
+        description: Runner to compare
+        required: true
+        default: macos-15
+        type: choice
+        options: [macos-15, macos-15-intel]
       source_commit:
         required: true
         type: string
@@ -46,7 +52,7 @@ jobs:
     continue-on-error: true
     outputs:
       outcome: ${{ steps.result.outputs.outcome }}
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner_label || 'macos-15' }}
     timeout-minutes: 28
     steps: &launch_steps
       - uses: actions/checkout@v4
@@ -125,7 +131,7 @@ jobs:
     continue-on-error: true
     outputs:
       outcome: ${{ steps.result.outputs.outcome }}
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner_label || 'macos-15' }}
     timeout-minutes: 28
     env:
       EXCESSIVECODE_GATE_ATTEMPTS: '1'
