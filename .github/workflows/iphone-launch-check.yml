@@ -48,6 +48,8 @@ jobs:
       outcome: ${{ steps.result.outputs.outcome }}
     runs-on: macos-15
     timeout-minutes: 28
+    env:
+      EXCESSIVECODE_GATE_ATTEMPTS: '1'
     steps: &launch_steps
       - uses: actions/checkout@v4
         with:
@@ -121,7 +123,7 @@ jobs:
           retention-days: 90
   retry_runner:
     needs: launch
-    if: ${{ !cancelled() && (needs.launch.outputs.outcome == '' || needs.launch.outputs.outcome == 'runner_fault') }}
+    if: ${{ !cancelled() && (needs.launch.outputs.outcome == '' || contains(fromJSON('["runner_fault","could_not_run"]'), needs.launch.outputs.outcome)) }}
     continue-on-error: true
     outputs:
       outcome: ${{ steps.result.outputs.outcome }}
@@ -142,10 +144,10 @@ jobs:
           RETRY: ${{ needs.retry_runner.outputs.outcome }}
         run: |
           result="$FIRST"
-          if [ "$result" = runner_fault ] || [ -z "$result" ]; then result="$RETRY"; fi
+          if [ "$result" = runner_fault ] || [ "$result" = could_not_run ] || [ -z "$result" ]; then result="$RETRY"; fi
           case "$result" in
             passed) echo 'Launch check passed' >> "$GITHUB_STEP_SUMMARY" ;;
             app_check_failed) echo '::error::App launch check failed; see bridge and main-thread evidence'; exit 1 ;;
-            *) echo '::warning::Check could not run after one retry; no frozen-app verdict. Upload may proceed.'
-               echo 'Check could not run after one retry (simulator or runner fault).' >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo '::error::Launch check could not run on either runner; not uploading.'
+               echo 'Launch check could not run on either runner (simulator or runner fault).' >> "$GITHUB_STEP_SUMMARY"; exit 1 ;;
           esac
