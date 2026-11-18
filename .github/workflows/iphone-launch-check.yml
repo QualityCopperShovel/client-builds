@@ -22,6 +22,11 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+      cache_mode:
+        description: Cold, warm, or changed-source compiler-cache trial
+        required: true
+        type: choice
+        options: [cold, warm, changed]
       trial_model:
         description: Simulator model for isolated trial
         type: choice
@@ -91,6 +96,28 @@ jobs:
         with:
           path: native-client/build/launch-check/ModuleCache.noindex
           key: ios-launch-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}
+      - name: Restore isolated compiler cache
+        if: ${{ inputs.cache_mode == 'warm' || inputs.cache_mode == 'changed' }}
+        id: swift_cache
+        uses: actions/cache/restore@v4
+        timeout-minutes: 3
+        with:
+          path: ${{ github.workspace }}/swift-cas
+          key: swift-cas-04bf-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ inputs.source_commit }}
+          fail-on-cache-miss: true
+      - name: Check compiler cache and optionally change source
+        working-directory: native-client
+        env:
+          CACHE_MODE: ${{ inputs.cache_mode }}
+          CAS_PATH: ${{ github.workspace }}/swift-cas
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          echo "CAS path: $CAS_PATH"
+          du -sh "$CAS_PATH" 2>/dev/null || true
+          if [ "$CACHE_MODE" = changed ]; then
+            printf '\n// Isolated compiler cache invalidation trial.\n' >> Shared/Voice/VoiceUploadTrace.swift
+          fi
       - name: Select model for isolated trial
         working-directory: native-client
         env:
@@ -122,6 +149,13 @@ jobs:
           set -euo pipefail
           python3 ../workflow-tools/scripts/watchdog_trial_instrument.py
           python3 ../workflow-tools/scripts/iphone_launch_gate.py
+      - name: Save isolated compiler cache
+        if: ${{ always() && inputs.cache_mode == 'cold' }}
+        uses: actions/cache/save@v4
+        timeout-minutes: 3
+        with:
+          path: ${{ github.workspace }}/swift-cas
+          key: swift-cas-04bf-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ inputs.source_commit }}
       - name: Record check verdict
         id: result
         if: always()
