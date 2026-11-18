@@ -96,6 +96,15 @@ jobs:
           EXCESSIVECODE_LAUNCH_CASE: ${{ inputs.scenario || 'full' }}
         run: |
           set -euo pipefail
+          # No-upload experiment only: compare the runner's current iOS runtime.
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          path = Path('launch_check.py')
+          source = path.read_text()
+          old = 'com.apple.CoreSimulator.SimRuntime.iOS-18-6'
+          assert source.count(old) == 1
+          path.write_text(source.replace(old, 'com.apple.CoreSimulator.SimRuntime.iOS-26-2'))
+          PYTHON
           python3 ../workflow-tools/scripts/iphone_launch_gate.py
       - name: Record check verdict
         id: result
