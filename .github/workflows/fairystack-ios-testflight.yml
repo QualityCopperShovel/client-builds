@@ -128,14 +128,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for _ in $(seq 1 120); do
+          for _ in $(seq 1 360); do
             row="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --jq '.jobs[] | select(.name == "launch / verdict") | "\(.status) \(.conclusion)"')"
             echo "launch verdict: ${row:-not started}"
             case "$row" in
               "completed success") exit 0 ;;
               completed*) echo 'Launch check failed; not uploading'; exit 1 ;;
             esac
-            sleep 15
+            sleep 5
           done
           echo 'Launch check verdict timed out'; exit 1
       - name: Upload to TestFlight
