@@ -120,6 +120,7 @@ jobs:
           EXCESSIVECODE_LAUNCH_CASE: ${{ inputs.scenario || 'full' }}
         run: |
           set -euo pipefail
+          python3 ../workflow-tools/scripts/replay_evidence_trial.py
           python3 ../workflow-tools/scripts/iphone_launch_gate.py
       - name: Record check verdict
         id: result
