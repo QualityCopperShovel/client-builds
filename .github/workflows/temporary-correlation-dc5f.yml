@@ -1,0 +1,16 @@
+name: Temporary dispatch correlation check
+run-name: 'Correlation check ${{ inputs.correlation_id }}'
+on:
+  workflow_dispatch:
+    inputs:
+      correlation_id:
+        description: Unique test identifier
+        required: true
+        type: string
+permissions: {}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo 'No upload; correlation check only.'
