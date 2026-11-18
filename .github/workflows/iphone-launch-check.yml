@@ -109,12 +109,36 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write('outcome='+outcome+'\n')
           PYTHON
+      - name: Capture simulator failure diagnostics
+        if: ${{ always() && steps.result.outputs.outcome != 'passed' }}
+        timeout-minutes: 2
+        run: |
+          python3 - <<'PYTHON'
+          import subprocess
+          from pathlib import Path
+          commands = [
+              ['ps', '-Ao', 'pid,ppid,pcpu,pmem,state,comm'],
+              ['vm_stat'],
+              ['xcrun', 'simctl', 'list', 'devices', 'booted', '-j'],
+              ['xcrun', 'simctl', 'spawn', 'booted', 'log', 'show', '--last', '5m', '--style', 'compact', '--predicate', 'process == "SpringBoard" OR process == "runningboardd" OR process == "installd" OR process == "ExcessiveCode"'],
+          ]
+          out = Path('native-client/launch-diagnostics.txt')
+          with out.open('w') as f:
+              for command in commands:
+                  f.write('\n$ ' + ' '.join(command) + '\n'); f.flush()
+                  try:
+                      p = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=25, text=True)
+                      f.write(p.stdout[-300000:] + '\nexit=' + str(p.returncode) + '\n')
+                  except subprocess.TimeoutExpired:
+                      f.write('timed out\n')
+          PYTHON
       - name: Retain launch check result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: iphone-launch-check-${{ github.job }}
           path: |
+            native-client/launch-diagnostics.txt
             native-client/launch-gate-result.json
             native-client/launch-check-attempts/
             native-client/launch-check-result.json
@@ -123,7 +147,7 @@ jobs:
           retention-days: 90
   retry_runner:
     needs: launch
-    if: ${{ !cancelled() && (needs.launch.outputs.outcome == '' || contains(fromJSON('["runner_fault","could_not_run"]'), needs.launch.outputs.outcome)) }}
+    if: ${{ false }}
     continue-on-error: true
     outputs:
       outcome: ${{ steps.result.outputs.outcome }}
