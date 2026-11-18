@@ -22,6 +22,11 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+      trial_model:
+        description: Simulator model for isolated trial
+        type: choice
+        required: true
+        options: [iPhone 16, iPhone 16 Pro]
       source_commit:
         required: true
         type: string
@@ -86,6 +91,27 @@ jobs:
         with:
           path: native-client/build/launch-check/ModuleCache.noindex
           key: ios-launch-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}
+      - name: Select model for isolated trial
+        working-directory: native-client
+        env:
+          TRIAL_MODEL: ${{ inputs.trial_model }}
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          model = os.environ['TRIAL_MODEL']
+          if model not in ('iPhone 16', 'iPhone 16 Pro'):
+              raise ValueError('invalid trial model')
+          path = Path('launch_check.py')
+          text = path.read_text()
+          old = "d['name'] == 'iPhone 16'"
+          kind = 'com.apple.CoreSimulator.SimDeviceType.iPhone-16'
+          assert text.count(old) == 1 and text.count(kind) == 1
+          text = text.replace(old, "d['name'] == " + repr(model))
+          text = text.replace(kind, kind + ('-Pro' if model.endswith(' Pro') else ''))
+          path.write_text(text)
+          print('Trial simulator:', model)
+          PYTHON
       - name: Open app, launch burst, main-thread ping and watchdog
         working-directory: native-client
         timeout-minutes: 26
