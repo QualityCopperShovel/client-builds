@@ -21,3 +21,26 @@ replacement = '''        if container:
 if source.count(needle) != 1:
     raise SystemExit('Unexpected launch check source; no diagnostic trial run')
 path.write_text(source.replace(needle, replacement))
+source = path.read_text()
+needle = "        evidence['step'] = 'simulator app process startup'\n"
+replacement = '''        # Trial only: sample the app once if its real watchdog writes a freeze.
+        def sample_freeze():
+            freeze = container / 'Library/Application Support/main-thread-freeze.json'
+            until = time.monotonic() + 90
+            while time.monotonic() < until:
+                if freeze.exists():
+                    try:
+                        pids = subprocess.check_output(['pgrep', '-x', 'ExcessiveCode'], text=True, timeout=5).split()
+                        if len(pids) == 1:
+                            sample = subprocess.run(['sample', pids[0], '3'], capture_output=True, text=True, timeout=20)
+                            (ROOT / 'launch-trial-sample.txt').write_text(sample.stdout + sample.stderr)
+                    except (OSError, subprocess.SubprocessError):
+                        pass
+                    return
+                time.sleep(.25)
+        threading.Thread(target=sample_freeze, daemon=True).start()
+        evidence['step'] = 'simulator app process startup'
+'''
+if source.count(needle) != 1:
+    raise SystemExit('Unexpected startup source; no diagnostic trial run')
+path.write_text(source.replace(needle, replacement))

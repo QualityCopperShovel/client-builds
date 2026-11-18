@@ -142,6 +142,7 @@ jobs:
             native-client/launch-diagnostics.txt
             native-client/launch-trial-events.json
             native-client/launch-trial-diagnostics.json
+            native-client/launch-trial-sample.txt
             native-client/launch-gate-result.json
             native-client/launch-check-attempts/
             native-client/launch-check-result.json
