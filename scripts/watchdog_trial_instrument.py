@@ -15,4 +15,14 @@ new = old + "\n" + '''                    evidence.setdefault('watchdog_queue_sa
                     })'''
 assert text.count(old) == 1
 text = text.replace(old, new)
+old = "    except Exception as error:\n        evidence.update(state='failed', error=str(error)[-3000:])"
+new = "    except Exception as error:\n" + """        try:
+            if container:
+                events_path = container / 'Library/Caches/launch-check-events.json'
+                evidence['fixture_events'] = json.loads(events_path.read_text())
+        except (OSError, ValueError):
+            pass
+""" + "        evidence.update(state='failed', error=str(error)[-3000:])"
+assert text.count(old) == 1
+text = text.replace(old, new)
 path.write_text(text)
