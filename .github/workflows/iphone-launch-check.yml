@@ -103,10 +103,7 @@ jobs:
           source = path.read_text()
           start = source.index('        # These calls only depend on installation')
           end = source.index('        server = ThreadingHTTPServer', start)
-          replacement = """        container = Path(run('xcrun', 'simctl', 'get_app_container', sim, 'com.fairystack.ios', 'data'))
-          run('xcrun', 'simctl', 'privacy', sim, 'grant', 'microphone', 'com.fairystack.ios')
-          run('xcrun', 'simctl', 'privacy', sim, 'grant', 'location', 'com.fairystack.ios')
-          """
+          replacement = "        container = Path(run('xcrun', 'simctl', 'get_app_container', sim, 'com.fairystack.ios', 'data'))\n        run('xcrun', 'simctl', 'privacy', sim, 'grant', 'microphone', 'com.fairystack.ios')\n        run('xcrun', 'simctl', 'privacy', sim, 'grant', 'location', 'com.fairystack.ios')\n"
           path.write_text(source[:start] + replacement + source[end:])
           PYTHON
           python3 ../workflow-tools/scripts/iphone_launch_gate.py
