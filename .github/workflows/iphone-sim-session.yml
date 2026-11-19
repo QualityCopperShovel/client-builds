@@ -201,13 +201,13 @@ jobs:
               --output "$GITHUB_WORKSPACE/evidence/$1-failure.json" \
               --startup-log "$COMMAND_TIMING_LOG" || true
           }
-          stage install 90 xcrun simctl install "$DEVICE" "${apps[0]}" || {
+          stage install 240 xcrun simctl install "$DEVICE" "${apps[0]}" || {
             install_status=$?; failure_evidence install; exit "$install_status"
           }
           # Keep optional permission errors visible, but never continue after a stalled simctl.
           stage microphone_permission 20 xcrun simctl privacy "$DEVICE" grant microphone "$APP_BUNDLE" || echo "Optional microphone_permission step did not finish; continuing."
           stage location_permission 20 xcrun simctl privacy "$DEVICE" revoke location "$APP_BUNDLE" || echo "Optional location_permission step did not finish; continuing."
-          stage launch 60 xcrun simctl launch "$DEVICE" "$APP_BUNDLE" --excessivecode-reset || {
+          stage launch 150 xcrun simctl launch "$DEVICE" "$APP_BUNDLE" --excessivecode-reset || {
             launch_status=$?; failure_evidence launch
             if [ -z '${{ inputs.app }}' ]; then exit "$launch_status"; fi
             echo "Hosted app launch failed ($launch_status); handing off the installed simulator for private diagnosis."
